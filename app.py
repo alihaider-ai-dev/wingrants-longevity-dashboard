@@ -2,20 +2,24 @@
 WinGrants longevity dashboard — Streamlit entry point.
 
 Layout:
-  - Sidebar  : lookback window + bucket size + DB status
-  - 5 tabs   : Overview · Research Notes · Strategy Notes · AI Drafts · Consortiums
+  - Sidebar : lookback window + bucket size + DB status
+  - 4 tabs  : Overview · Research Notes · Strategy Notes · AI Drafts
 
-Every entity tab renders three sections (Trend / Drift / Cohort), then a
-drill-down dataframe at the bottom with a one-click CSV export. The
-Overview tab cross-cuts all surfaces with one shared chart + a metric
-strip.
+Each entity tab renders:
+  1. Top-line metric strip
+  2. Trend over time (avg grade + percentile ribbon)
+  3. Per-scorer drift (heatmap)
+  4. Customer cohort (top owners by avg grade)
+  5. Drill-down summary table (one row per entity)
+  6. Latest score details — every individual score with the LLM's
+     reasoning + key weakness, scorer code mapped to a human name.
 
-Why one file for the renderer
------------------------------
-The per-tab render functions are thin compositions of `src/queries.py`
-and `src/charts.py` primitives — splitting them into separate files
-would just shuffle them around without adding readability, and keeps
-the imports + page-config + auth gate all in one place at the top.
+The Overview tab cross-cuts all surfaces with one shared chart + a
+metric strip.
+
+Standalone Scorecards and Consortiums tabs were dropped per user
+direction — neither was useful for the longevity study they're
+actually running.
 """
 
 from __future__ import annotations
@@ -24,11 +28,10 @@ import pandas as pd
 import streamlit as st
 from dotenv import load_dotenv
 
-# ── Load .env BEFORE importing modules that read os.environ ──────
 load_dotenv()
 
 from src import auth, charts, filters, queries
-from src.consortium_extract import consortium_scores, consortium_trend
+from src.scorer_names import label_for
 
 
 # ── Page config (must run before any other Streamlit call) ───────
@@ -53,9 +56,8 @@ st.markdown(
         WinGrants <em style="color:#D9542E;font-style:italic;">longevity</em>
       </h1>
       <p style="margin:6px 0 0;color:#6D6682;font-size:13px;">
-        How quality scores evolve across every WinGrants surface — research
-        notes, strategy notes, AI drafts, standalone scorecards, and
-        consortium audits.
+        How quality scores evolve across the WinGrants surfaces we
+        actively score — research notes, strategy notes, AI drafts.
       </p>
     </div>
     """,
@@ -74,8 +76,6 @@ tabs = st.tabs(
         "Research Notes",
         "Strategy Notes",
         "AI Drafts",
-        "Standalone Scorecards",
-        "Consortiums",
     ]
 )
 
@@ -97,11 +97,77 @@ def _metric_strip(df: pd.DataFrame, label: str) -> None:
     cols[3].metric("Approx cost (USD)", f"${float(cost):.2f}" if cost is not None else "—")
 
 
+def _grade_pill(grade: int | float | None, grade_label: str | None) -> str:
+    """Render `4 · GOOD` style pill markup for the details table.
+
+    Colours are warm-paper brand tokens (mint = ≥4, sun = 3, coral = ≤2).
+    """
+    if grade is None:
+        return "—"
+    g = int(grade)
+    if g >= 4:
+        bg, fg = "#DDF0D9", "#3C7A3A"
+    elif g == 3:
+        bg, fg = "#FBECC4", "#8F6718"
+    else:
+        bg, fg = "#FFE2D5", "#D9542E"
+    label = (grade_label or "").upper()
+    pill = (
+        f"<span style='display:inline-block;padding:2px 8px;border-radius:999px;"
+        f"background:{bg};color:{fg};font-weight:600;font-size:11px;'>"
+        f"Grade {g}{' · ' + label if label else ''}</span>"
+    )
+    return pill
+
+
+def _score_details(entity_key: str, days: int) -> None:
+    """Render an expandable, human-readable per-score view.
+
+    Streamlit's `st.dataframe` doesn't render HTML, so we drop down
+    to `st.markdown` and emit one card per score. Capped at 200 rows
+    so the page stays responsive even for proposals with 365 scorers.
+    """
+    df = queries.latest_score_details(entity_key, days=days, limit=200)
+    if df.empty:
+        st.info("No score details in the selected window.")
+        return
+
+    st.markdown(f"_Showing {len(df)} most-recent scores (capped at 200)._")
+
+    # Filter chips for grade band so the team can isolate the weak
+    # scores when reading reasoning text.
+    bands = st.multiselect(
+        "Filter by grade",
+        options=[1, 2, 3, 4, 5],
+        default=[],
+        help="Empty = show all grades",
+        key=f"grade_filter_{entity_key}",
+    )
+    if bands:
+        df = df[df["grade"].isin(bands)]
+
+    for _, r in df.iterrows():
+        scorer_label = label_for(r["scorer_id"])
+        pill = _grade_pill(r["grade"], r["grade_label"])
+        with st.expander(
+            f"{r['scored_on']}  ·  {r['entity_title'][:60]}  ·  {scorer_label}",
+            expanded=False,
+        ):
+            st.markdown(pill, unsafe_allow_html=True)
+            if r["reasoning"]:
+                st.markdown("**Reasoning**")
+                st.write(r["reasoning"])
+            if r["key_weakness"] and str(r["key_weakness"]).lower() not in {"none", "n/a", ""}:
+                st.markdown("**Key weakness**")
+                st.write(r["key_weakness"])
+            st.caption(f"Scorer: `{r['scorer_id']}`  ·  Model: `{r['model'] or 'unknown'}`")
+
+
 def _entity_tab(entity_key: str, label: str) -> None:
-    """Render the standard three-section view for an entity."""
+    """Render the standard view for an entity."""
     st.markdown(f"### {label}")
 
-    # ── Top-line metrics for this entity (filter by entity row).
+    # ── Top-line metrics for this entity
     metrics = queries.overview_metrics(days=f.days)
     metric_row = metrics[metrics["entity"] == label]
     _metric_strip(metric_row, label)
@@ -115,12 +181,13 @@ def _entity_tab(entity_key: str, label: str) -> None:
         use_container_width=True,
     )
 
-    # ── Section 2: Drift
-    st.markdown("#### Per-evaluator drift")
-    st.altair_chart(
-        charts.drift_heatmap(queries.scorer_drift(entity_key, days=f.days)),
-        use_container_width=True,
-    )
+    # ── Section 2: Drift (scorer codes mapped to human names)
+    st.markdown("#### Per-scorer drift")
+    drift_df = queries.scorer_drift(entity_key, days=f.days)
+    if not drift_df.empty:
+        drift_df = drift_df.copy()
+        drift_df["scorer"] = drift_df["scorer"].map(label_for)
+    st.altair_chart(charts.drift_heatmap(drift_df), use_container_width=True)
 
     # ── Section 3: Cohort
     st.markdown("#### Customer cohort comparison")
@@ -129,8 +196,8 @@ def _entity_tab(entity_key: str, label: str) -> None:
         use_container_width=True,
     )
 
-    # ── Drill-down table + CSV export
-    st.markdown("#### Drill-down")
+    # ── Section 4: per-entity summary table (one row per note/draft)
+    st.markdown("#### Drill-down — entities")
     detail = queries.entity_summary(entity_key, days=f.days)
     st.dataframe(detail, hide_index=True, use_container_width=True)
     if not detail.empty:
@@ -139,7 +206,12 @@ def _entity_tab(entity_key: str, label: str) -> None:
             data=detail.to_csv(index=False).encode("utf-8"),
             file_name=f"wingrants_{entity_key}_summary.csv",
             mime="text/csv",
+            key=f"dl_{entity_key}",
         )
+
+    # ── Section 5: per-score details with reasoning + key_weakness
+    st.markdown("#### Latest scoring details")
+    _score_details(entity_key, days=f.days)
 
 
 # ── Tab 0 — Overview ──────────────────────────────────────────────
@@ -184,59 +256,6 @@ with tabs[2]:
 # ── Tab 3 — AI Drafts ─────────────────────────────────────────────
 with tabs[3]:
     _entity_tab("ai_draft", "AI drafts (proposals)")
-
-
-# ── Tab 4 — Standalone Scorecards ─────────────────────────────────
-with tabs[4]:
-    _entity_tab("scorecard", "Standalone scorecards")
-
-
-# ── Tab 5 — Consortiums (S3 JSONB-sourced) ────────────────────────
-with tabs[5]:
-    st.markdown("### Consortium audits")
-    scores = consortium_scores(days=max(f.days, 365))
-    if scores.empty:
-        st.info(
-            "No consortium audit data in the selected window. If this is "
-            "unexpected, check the AWS credentials in `secrets.toml` and "
-            "confirm the bucket name matches the BE writer's target."
-        )
-    else:
-        cols = st.columns(4)
-        cols[0].metric("Audited consortia", int(scores.shape[0]))
-        cols[1].metric(
-            "Mean overall score",
-            f"{scores['overall_score'].dropna().mean():.2f}" if not scores["overall_score"].dropna().empty else "—",
-        )
-        cols[2].metric(
-            "Issues per audit",
-            f"{scores['issues_found'].mean():.1f}" if not scores["issues_found"].dropna().empty else "—",
-        )
-        cols[3].metric("Distinct owners", scores["owner"].nunique())
-
-        st.markdown("#### Overall score trend")
-        st.altair_chart(
-            charts.trend_chart(consortium_trend(days=f.days, granularity=f.granularity)),
-            use_container_width=True,
-        )
-
-        st.markdown("#### Per-pillar audit scores")
-        per_pillar = scores.melt(
-            id_vars=["id", "title", "owner", "completed_on"],
-            value_vars=["completeness", "balance", "eligibility"],
-            var_name="pillar",
-            value_name="score",
-        )
-        st.dataframe(per_pillar, hide_index=True, use_container_width=True)
-
-        st.markdown("#### Drill-down")
-        st.dataframe(scores, hide_index=True, use_container_width=True)
-        st.download_button(
-            "Download CSV",
-            data=scores.to_csv(index=False).encode("utf-8"),
-            file_name="wingrants_consortium_audits.csv",
-            mime="text/csv",
-        )
 
 
 # ── Footer ────────────────────────────────────────────────────────

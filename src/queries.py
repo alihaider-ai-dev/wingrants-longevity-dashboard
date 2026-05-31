@@ -60,20 +60,6 @@ ENTITIES = {
         # generic queries below normalise this difference.
         "scorer_col": "evaluator_id",
     },
-    "scorecard": {
-        # Tables renamed in migration 024 (proposal_scorecards →
-        # proposal_evals + scorecard_scores → proposal_eval_scores)
-        # while the FE label "Scorecard" stayed. Keep our entity key
-        # "scorecard" so the existing tab IDs in app.py don't churn,
-        # but point at the new table names + the renamed FK.
-        "label": "Standalone scorecards",
-        "name_table": "proposal_evals",
-        "score_table": "proposal_eval_scores",
-        "summary_table": "proposal_eval_summaries",
-        "fk": "eval_id",
-        "id_label": "eval_id",
-        "scorer_col": "evaluator_id",
-    },
 }
 
 
@@ -208,25 +194,6 @@ def entity_summary(entity_key: str, days: int = 365) -> pd.DataFrame:
             WHERE s.scored_at >= NOW() - (:days || ' days')::interval
             ORDER BY s.scored_at DESC
         """
-    elif entity_key == "scorecard":
-        sql = """
-            SELECT
-                sc.id,
-                sc.name AS title,
-                sc.call_title AS cluster,
-                u.email AS owner,
-                s.average_grade,
-                s.successful_evaluations AS successful,
-                s.failed_evaluations AS failed,
-                s.total_input_tokens + s.total_output_tokens AS total_tokens,
-                s.scored_at::date AS scored_on,
-                sc.created_at::date AS created_on
-            FROM proposal_evals sc
-            JOIN proposal_eval_summaries s ON s.eval_id = sc.id
-            LEFT JOIN users u ON u.id = sc.user_id
-            WHERE s.scored_at >= NOW() - (:days || ' days')::interval
-            ORDER BY s.scored_at DESC
-        """
     elif entity_key == "research_note":
         sql = """
             SELECT
@@ -302,6 +269,50 @@ def overview_metrics(days: int = 90) -> pd.DataFrame:
         )
     sql = "UNION ALL".join(pieces)
     return run_query(sql, {"days": days})
+
+
+# ── Latest per-score detail (with reasoning + key_weakness) ────────
+
+def latest_score_details(
+    entity_key: str,
+    days: int = 90,
+    limit: int = 200,
+) -> pd.DataFrame:
+    """Return one row per individual score (newest first) with the
+    LLM's reasoning + key_weakness so the team can read what every
+    scorer actually said about each entity.
+
+    Mirrors the schema across all 3 score tables — same columns, just
+    different FK + scorer column name. The drill-down table at the
+    bottom of each entity tab uses this to surface justifications.
+    """
+    cfg = ENTITIES[entity_key]
+    scorer_col = _scorer_col(entity_key)
+    name_join_id = (
+        "p.id" if entity_key == "ai_draft"
+        else "n.id"
+    )
+    title_table = "proposals p" if entity_key == "ai_draft" else f'{cfg["name_table"]} n'
+    title_alias = "p" if entity_key == "ai_draft" else "n"
+
+    sql = f"""
+        SELECT
+            s.scored_at::date AS scored_on,
+            COALESCE({title_alias}.name, {title_alias}.id) AS entity_title,
+            s.{scorer_col} AS scorer_id,
+            s.grade,
+            s.grade_label,
+            s.reasoning,
+            s.key_weakness,
+            s.model
+        FROM {cfg["score_table"]} s
+        JOIN {title_table} ON {name_join_id} = s.{cfg["fk"]}
+        WHERE s.scored_at >= NOW() - (:days || ' days')::interval
+          AND s.grade IS NOT NULL
+        ORDER BY s.scored_at DESC, s.id
+        LIMIT :limit
+    """
+    return run_query(sql, {"days": days, "limit": limit})
 
 
 # ── Cross-cutting trend (for the Overview chart) ───────────────────
