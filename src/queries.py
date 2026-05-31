@@ -61,12 +61,17 @@ ENTITIES = {
         "scorer_col": "evaluator_id",
     },
     "scorecard": {
+        # Tables renamed in migration 024 (proposal_scorecards →
+        # proposal_evals + scorecard_scores → proposal_eval_scores)
+        # while the FE label "Scorecard" stayed. Keep our entity key
+        # "scorecard" so the existing tab IDs in app.py don't churn,
+        # but point at the new table names + the renamed FK.
         "label": "Standalone scorecards",
-        "name_table": "proposal_scorecards",
-        "score_table": "scorecard_scores",
-        "summary_table": "scorecard_summaries",
-        "fk": "scorecard_id",
-        "id_label": "scorecard_id",
+        "name_table": "proposal_evals",
+        "score_table": "proposal_eval_scores",
+        "summary_table": "proposal_eval_summaries",
+        "fk": "eval_id",
+        "id_label": "eval_id",
         "scorer_col": "evaluator_id",
     },
 }
@@ -229,8 +234,8 @@ def entity_summary(entity_key: str, days: int = 365) -> pd.DataFrame:
                 s.total_input_tokens + s.total_output_tokens AS total_tokens,
                 s.scored_at::date AS scored_on,
                 sc.created_at::date AS created_on
-            FROM proposal_scorecards sc
-            JOIN scorecard_summaries s ON s.scorecard_id = sc.id
+            FROM proposal_evals sc
+            JOIN proposal_eval_summaries s ON s.eval_id = sc.id
             LEFT JOIN users u ON u.id = sc.user_id
             WHERE s.scored_at >= NOW() - (:days || ' days')::interval
             ORDER BY s.scored_at DESC
