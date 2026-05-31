@@ -151,42 +151,29 @@ def customer_cohort(entity_key: str, days: int = 365) -> pd.DataFrame:
     chain (they reference a concept_note which references a user),
     so we branch on entity_key.
     """
+    # All four entity name-tables (concept_notes, strategy_notes,
+    # proposals, proposal_evals) carry their own user_id column — no
+    # cross-table chasing needed. The earlier strategy_note special-
+    # case assumed strategy_notes referenced concept_notes via a
+    # concept_note_id FK; in practice strategy_notes just embeds the
+    # concept-note source as text (`concept_note_text`, `…_filename`),
+    # so the FK lookup ran against a column that doesn't exist.
     cfg = ENTITIES[entity_key]
-    if entity_key == "strategy_note":
-        # strategy_notes.user_id may be NULL for older rows that only
-        # reference a concept_note. COALESCE so cohort grouping picks
-        # up the right account in either case.
-        sql = f"""
-            SELECT
-                u.email,
-                COUNT(DISTINCT n.id) AS entities,
-                AVG(s.average_grade)::numeric(4,2) AS avg_grade,
-                MIN(s.scored_at)::date AS first_score,
-                MAX(s.scored_at)::date AS last_score
-            FROM strategy_notes n
-            JOIN strategy_note_score_summaries s ON s.strategy_note_id = n.id
-            LEFT JOIN concept_notes cn ON cn.id = n.concept_note_id
-            LEFT JOIN users u ON u.id = COALESCE(n.user_id, cn.user_id)
-            WHERE s.scored_at >= NOW() - (:days || ' days')::interval
-              AND u.email IS NOT NULL
-            GROUP BY u.email
-            ORDER BY avg_grade DESC NULLS LAST
-        """
-    else:
-        sql = f"""
-            SELECT
-                u.email,
-                COUNT(DISTINCT n.id) AS entities,
-                AVG(s.average_grade)::numeric(4,2) AS avg_grade,
-                MIN(s.scored_at)::date AS first_score,
-                MAX(s.scored_at)::date AS last_score
-            FROM {cfg["name_table"]} n
-            JOIN {cfg["summary_table"]} s ON s.{cfg["fk"]} = n.id
-            JOIN users u ON u.id = n.user_id
-            WHERE s.scored_at >= NOW() - (:days || ' days')::interval
-            GROUP BY u.email
-            ORDER BY avg_grade DESC NULLS LAST
-        """
+    sql = f"""
+        SELECT
+            u.email,
+            COUNT(DISTINCT n.id) AS entities,
+            AVG(s.average_grade)::numeric(4,2) AS avg_grade,
+            MIN(s.scored_at)::date AS first_score,
+            MAX(s.scored_at)::date AS last_score
+        FROM {cfg["name_table"]} n
+        JOIN {cfg["summary_table"]} s ON s.{cfg["fk"]} = n.id
+        LEFT JOIN users u ON u.id = n.user_id
+        WHERE s.scored_at >= NOW() - (:days || ' days')::interval
+          AND u.email IS NOT NULL
+        GROUP BY u.email
+        ORDER BY avg_grade DESC NULLS LAST
+    """
     return run_query(sql, {"days": days})
 
 
@@ -258,7 +245,7 @@ def entity_summary(entity_key: str, days: int = 365) -> pd.DataFrame:
             WHERE s.scored_at >= NOW() - (:days || ' days')::interval
             ORDER BY s.scored_at DESC
         """
-    else:  # strategy_note
+    else:  # strategy_note — uses its own user_id (no concept_note FK)
         sql = """
             SELECT
                 n.id,
@@ -272,8 +259,7 @@ def entity_summary(entity_key: str, days: int = 365) -> pd.DataFrame:
                 n.created_at::date AS created_on
             FROM strategy_notes n
             JOIN strategy_note_score_summaries s ON s.strategy_note_id = n.id
-            LEFT JOIN concept_notes cn ON cn.id = n.concept_note_id
-            LEFT JOIN users u ON u.id = COALESCE(n.user_id, cn.user_id)
+            LEFT JOIN users u ON u.id = n.user_id
             WHERE s.scored_at >= NOW() - (:days || ' days')::interval
             ORDER BY s.scored_at DESC
         """
