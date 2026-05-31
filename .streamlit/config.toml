@@ -1,0 +1,21 @@
+# Streamlit theme — warm-paper palette mirrors the WinGrants brand so
+# the dashboard reads as a sibling surface to the main app rather than
+# a Streamlit default with a logo bolted on.
+
+[theme]
+base = "light"
+primaryColor = "#D9542E"             # accent-deep (coral)
+backgroundColor = "#FBF7F1"          # paper
+secondaryBackgroundColor = "#F4EEE7" # warm bg
+textColor = "#1A1530"                # ink
+font = "serif"
+
+[server]
+# Streamlit Cloud sets PORT itself; this only matters when running
+# locally via `streamlit run app.py`.
+port = 8501
+headless = true
+enableXsrfProtection = true
+
+[browser]
+gatherUsageStats = false
