@@ -172,54 +172,154 @@ def _score_details(entity_key: str, days: int) -> None:
 
 
 def _entity_tab(entity_key: str, label: str) -> None:
-    """Render the standard view for an entity."""
+    """Two-mode renderer per entity: **By proposal** or **By evaluator**.
+
+    Both modes are picker-driven (no date trend, no drift heatmap).
+    The team picks the thing they want to investigate and reads the
+    full breakdown with grades + reasoning + key weakness.
+    """
     st.markdown(f"### {label}")
 
-    # ── Top-line metrics for this entity
-    metrics = queries.overview_metrics(days=f.days)
-    metric_row = metrics[metrics["entity"] == label]
-    _metric_strip(metric_row, label)
-
-    # ── Section 1: Trend
-    st.markdown("#### Trend over time")
-    st.altair_chart(
-        charts.trend_chart(
-            queries.trend_over_time(entity_key, days=f.days, granularity=f.granularity)
-        ),
-        use_container_width=True,
+    # ── Mode selector
+    mode = st.radio(
+        "View by",
+        options=["By proposal", "By evaluator"],
+        horizontal=True,
+        key=f"mode_{entity_key}",
+        label_visibility="collapsed",
     )
 
-    # ── Section 2: Drift (scorer codes mapped to human names)
-    st.markdown("#### Per-scorer drift")
-    drift_df = queries.scorer_drift(entity_key, days=f.days)
-    if not drift_df.empty:
-        drift_df = drift_df.copy()
-        drift_df["scorer"] = drift_df["scorer"].map(label_for)
-    st.altair_chart(charts.drift_heatmap(drift_df), use_container_width=True)
+    if mode == "By proposal":
+        _by_proposal(entity_key)
+    else:
+        _by_evaluator(entity_key)
 
-    # ── Section 3: Cohort
-    st.markdown("#### Customer cohort comparison")
-    st.altair_chart(
-        charts.cohort_distribution(queries.customer_cohort(entity_key, days=max(f.days, 365))),
-        use_container_width=True,
+
+def _by_proposal(entity_key: str) -> None:
+    """Pick one entity → see every evaluator's grade + reasoning."""
+    listing = queries.entity_list_with_scores(entity_key, days=f.days)
+    if listing.empty:
+        st.info("No scored entities in the selected window.")
+        return
+
+    # Picker with avg-grade + scorer-count chip so the picker itself is informative.
+    options = {
+        row["id"]: f"{row['title'][:80]}  ·  avg {row['avg_grade']:.2f}  ·  {row['scorer_count']} scorers  ·  {row['owner'] or '—'}"
+        for _, row in listing.iterrows()
+    }
+    picked_id = st.selectbox(
+        "Pick a proposal",
+        options=list(options.keys()),
+        format_func=lambda k: options[k],
+        key=f"prop_pick_{entity_key}",
     )
+    if not picked_id:
+        return
 
-    # ── Section 4: per-entity summary table (one row per note/draft)
-    st.markdown("#### Drill-down — entities")
-    detail = queries.entity_summary(entity_key, days=f.days)
-    st.dataframe(detail, hide_index=True, use_container_width=True)
-    if not detail.empty:
-        st.download_button(
-            "Download CSV",
-            data=detail.to_csv(index=False).encode("utf-8"),
-            file_name=f"wingrants_{entity_key}_summary.csv",
-            mime="text/csv",
-            key=f"dl_{entity_key}",
-        )
+    meta = listing[listing["id"] == picked_id].iloc[0]
+    cols = st.columns(4)
+    cols[0].metric("Avg grade", f"{meta['avg_grade']:.2f}")
+    cols[1].metric("Scorers", int(meta["scorer_count"]))
+    cols[2].metric("Last scored", str(meta["last_scored_on"]))
+    cols[3].metric("Owner", meta["owner"] or "—")
 
-    # ── Section 5: per-score details with reasoning + key_weakness
-    st.markdown("#### Latest scoring details")
-    _score_details(entity_key, days=f.days)
+    detail = queries.entity_score_breakdown(entity_key, picked_id)
+    if detail.empty:
+        st.info("No score rows found for this proposal.")
+        return
+
+    st.markdown(f"#### All scorer grades for `{meta['title'][:80]}`")
+    st.caption(f"_{len(detail)} scores · sorted by grade ascending (weakest first)._")
+
+    # Grade-band filter same as before
+    bands = st.multiselect(
+        "Filter by grade",
+        options=[1, 2, 3, 4, 5],
+        default=[],
+        help="Empty = show all grades",
+        key=f"grade_filter_byprop_{entity_key}",
+    )
+    if bands:
+        detail = detail[detail["grade"].isin(bands)]
+
+    for _, r in detail.iterrows():
+        scorer_label = label_for(r["scorer_id"])
+        pill = _grade_pill(r["grade"], r["grade_label"])
+        with st.expander(f"{scorer_label}", expanded=False):
+            st.markdown(pill, unsafe_allow_html=True)
+            if r["reasoning"]:
+                st.markdown("**Reasoning**")
+                st.write(r["reasoning"])
+            kw = (r["key_weakness"] or "").strip()
+            if kw and kw.lower() not in {"none", "n/a"}:
+                st.markdown("**Key weakness**")
+                st.write(kw)
+            st.caption(
+                f"Scorer: `{r['scorer_id']}`  ·  Model: `{r['model'] or 'unknown'}`  ·  Scored on {r['scored_on']}"
+            )
+
+
+def _by_evaluator(entity_key: str) -> None:
+    """Pick one evaluator → see every entity it scored, with mean + reasoning."""
+    listing = queries.evaluator_list_with_scores(entity_key, days=f.days)
+    if listing.empty:
+        st.info("No evaluator activity in the selected window.")
+        return
+
+    options = {
+        row["scorer_id"]: f"{label_for(row['scorer_id'])}  ·  mean {row['mean_grade']:.2f}  ·  {int(row['entities_scored'])} entities  ·  {int(row['total_scores'])} scores"
+        for _, row in listing.iterrows()
+    }
+    picked = st.selectbox(
+        "Pick an evaluator",
+        options=list(options.keys()),
+        format_func=lambda k: options[k],
+        key=f"eval_pick_{entity_key}",
+    )
+    if not picked:
+        return
+
+    meta = listing[listing["scorer_id"] == picked].iloc[0]
+    cols = st.columns(5)
+    cols[0].metric("Mean grade", f"{meta['mean_grade']:.2f}")
+    cols[1].metric("Std dev", f"{meta['stddev']:.2f}")
+    cols[2].metric("Min / Max", f"{int(meta['min_grade'])} / {int(meta['max_grade'])}")
+    cols[3].metric("Entities scored", int(meta["entities_scored"]))
+    cols[4].metric("Total scores", int(meta["total_scores"]))
+
+    detail = queries.evaluator_score_breakdown(entity_key, picked, days=f.days)
+    if detail.empty:
+        st.info("No score rows found for this evaluator.")
+        return
+
+    st.markdown(f"#### Every entity scored by `{label_for(picked)}`")
+    st.caption(f"_{len(detail)} entities · sorted by grade ascending (weakest first)._")
+
+    bands = st.multiselect(
+        "Filter by grade",
+        options=[1, 2, 3, 4, 5],
+        default=[],
+        help="Empty = show all grades",
+        key=f"grade_filter_byeval_{entity_key}",
+    )
+    if bands:
+        detail = detail[detail["grade"].isin(bands)]
+
+    for _, r in detail.iterrows():
+        pill = _grade_pill(r["grade"], r["grade_label"])
+        with st.expander(
+            f"{r['scored_on']}  ·  {r['entity_title'][:80]}  ·  {r['owner'] or '—'}",
+            expanded=False,
+        ):
+            st.markdown(pill, unsafe_allow_html=True)
+            if r["reasoning"]:
+                st.markdown("**Reasoning**")
+                st.write(r["reasoning"])
+            kw = (r["key_weakness"] or "").strip()
+            if kw and kw.lower() not in {"none", "n/a"}:
+                st.markdown("**Key weakness**")
+                st.write(kw)
+            st.caption(f"Entity id: `{r['entity_id']}`  ·  Model: `{r['model'] or 'unknown'}`")
 
 
 # ── Tab 0 — Overview ──────────────────────────────────────────────

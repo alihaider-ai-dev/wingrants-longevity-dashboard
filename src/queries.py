@@ -271,6 +271,124 @@ def overview_metrics(days: int = 90) -> pd.DataFrame:
     return run_query(sql, {"days": days})
 
 
+# ── Proposal/entity-centric queries ────────────────────────────────
+#
+# These power the "By proposal" picker + breakdown. The team flips
+# between entity types (research note / strategy note / AI draft),
+# picks one specific entity, and sees every evaluator's grade +
+# reasoning for it — same way the BE's scorer pipeline outputs
+# results.
+
+
+def entity_list_with_scores(entity_key: str, days: int = 365) -> pd.DataFrame:
+    """One row per entity that has at least one score in the window,
+    sorted newest-first. Powers the proposal picker."""
+    cfg = ENTITIES[entity_key]
+    name_table = cfg["name_table"]
+    fk = cfg["fk"]
+    sql = f"""
+        SELECT
+            n.id,
+            COALESCE(NULLIF(n.name, ''), n.id) AS title,
+            u.email AS owner,
+            ROUND(AVG(s.grade)::numeric, 2) AS avg_grade,
+            COUNT(s.id) AS scorer_count,
+            MAX(s.scored_at)::date AS last_scored_on
+        FROM {name_table} n
+        JOIN {cfg["score_table"]} s ON s.{fk} = n.id
+        LEFT JOIN users u ON u.id = n.user_id
+        WHERE s.scored_at >= NOW() - (:days || ' days')::interval
+          AND s.grade IS NOT NULL
+        GROUP BY n.id, n.name, u.email
+        ORDER BY last_scored_on DESC, n.id
+    """
+    return run_query(sql, {"days": days})
+
+
+def entity_score_breakdown(entity_key: str, entity_id: str) -> pd.DataFrame:
+    """Every evaluator's score for ONE specific entity, ordered by
+    grade ascending so the weakest scores read first (the team wants
+    to fix the problems, not celebrate the wins)."""
+    cfg = ENTITIES[entity_key]
+    scorer_col = _scorer_col(entity_key)
+    sql = f"""
+        SELECT
+            s.{scorer_col} AS scorer_id,
+            s.grade,
+            s.grade_label,
+            s.reasoning,
+            s.key_weakness,
+            s.model,
+            s.scored_at::date AS scored_on
+        FROM {cfg["score_table"]} s
+        WHERE s.{cfg["fk"]} = :entity_id
+          AND s.grade IS NOT NULL
+        ORDER BY s.grade ASC, s.{scorer_col}
+    """
+    return run_query(sql, {"entity_id": entity_id})
+
+
+# ── Evaluator-centric queries ──────────────────────────────────────
+
+
+def evaluator_list_with_scores(entity_key: str, days: int = 365) -> pd.DataFrame:
+    """One row per evaluator that scored at least one entity in the
+    window, with their mean grade across all entities. Powers the
+    evaluator picker."""
+    cfg = ENTITIES[entity_key]
+    scorer_col = _scorer_col(entity_key)
+    sql = f"""
+        SELECT
+            {scorer_col} AS scorer_id,
+            ROUND(AVG(grade)::numeric, 2) AS mean_grade,
+            ROUND(COALESCE(STDDEV(grade), 0)::numeric, 2) AS stddev,
+            MIN(grade) AS min_grade,
+            MAX(grade) AS max_grade,
+            COUNT(DISTINCT {cfg["fk"]}) AS entities_scored,
+            COUNT(*) AS total_scores
+        FROM {cfg["score_table"]}
+        WHERE scored_at >= NOW() - (:days || ' days')::interval
+          AND grade IS NOT NULL
+        GROUP BY {scorer_col}
+        ORDER BY {scorer_col}
+    """
+    return run_query(sql, {"days": days})
+
+
+def evaluator_score_breakdown(
+    entity_key: str,
+    scorer_id: str,
+    days: int = 365,
+) -> pd.DataFrame:
+    """Every entity ONE specific evaluator scored, with grade +
+    reasoning, sorted by grade ascending so the weakest entities
+    surface first."""
+    cfg = ENTITIES[entity_key]
+    scorer_col = _scorer_col(entity_key)
+    name_table = cfg["name_table"]
+    fk = cfg["fk"]
+    sql = f"""
+        SELECT
+            n.id AS entity_id,
+            COALESCE(NULLIF(n.name, ''), n.id) AS entity_title,
+            u.email AS owner,
+            s.grade,
+            s.grade_label,
+            s.reasoning,
+            s.key_weakness,
+            s.model,
+            s.scored_at::date AS scored_on
+        FROM {cfg["score_table"]} s
+        JOIN {name_table} n ON n.id = s.{fk}
+        LEFT JOIN users u ON u.id = n.user_id
+        WHERE s.{scorer_col} = :scorer_id
+          AND s.scored_at >= NOW() - (:days || ' days')::interval
+          AND s.grade IS NOT NULL
+        ORDER BY s.grade ASC, s.scored_at DESC
+    """
+    return run_query(sql, {"scorer_id": scorer_id, "days": days})
+
+
 # ── Latest per-score detail (with reasoning + key_weakness) ────────
 
 def latest_score_details(
