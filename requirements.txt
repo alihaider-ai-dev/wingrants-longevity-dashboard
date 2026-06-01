@@ -9,3 +9,4 @@ altair==5.5.0
 boto3==1.35.81
 python-dotenv==1.1.1
 sqlalchemy==2.0.36          # pandas.read_sql convenience layer
+anthropic==0.42.0           # Claude API for the AI chart generator
