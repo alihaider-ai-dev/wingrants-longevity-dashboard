@@ -172,46 +172,61 @@ def _score_details(entity_key: str, days: int) -> None:
 
 
 def _entity_tab(entity_key: str, label: str) -> None:
-    """Two-mode renderer per entity: **By proposal** or **By evaluator**.
-
-    Both modes are picker-driven (no date trend, no drift heatmap).
-    The team picks the thing they want to investigate and reads the
-    full breakdown with grades + reasoning + key weakness.
+    """Two-mode renderer per feature, with the right WinGrants term
+    used everywhere — research notes use 'research note', strategy
+    notes use 'strategy note', AI drafts use 'proposal'. The label
+    'evaluator' is the same across all three because that's the team's
+    common vocabulary for the scoring rubrics regardless of feature.
     """
-    st.markdown(f"### {label}")
+    cfg = queries.ENTITIES[entity_key]
+    singular = cfg["singular"]                  # 'research note' / 'strategy note' / 'proposal'
+    plural = label.lower()                       # 'research notes' / 'strategy notes' / 'ai drafts'
+    scorer_prefix = cfg["scorer_prefix"]
 
-    # ── Mode selector
+    st.markdown(f"### {label}")
+    st.caption(
+        f"Every {singular} below is scored by evaluators in the "
+        f"`{scorer_prefix}-…` family. Pick a {singular} to see all "
+        f"evaluators that scored it, OR pick an evaluator to see every "
+        f"{singular} it scored — with its mean across them all."
+    )
+
+    # ── Mode selector — labels use the right singular per feature.
     mode = st.radio(
-        "View by",
-        options=["By proposal", "By evaluator"],
+        "View",
+        options=[f"By {singular}", "By evaluator"],
         horizontal=True,
         key=f"mode_{entity_key}",
         label_visibility="collapsed",
     )
 
-    if mode == "By proposal":
-        _by_proposal(entity_key)
-    else:
-        _by_evaluator(entity_key)
+    if mode.startswith("By "):
+        if "evaluator" in mode:
+            _by_evaluator(entity_key, singular, plural)
+        else:
+            _by_entity(entity_key, singular, plural)
 
 
-def _by_proposal(entity_key: str) -> None:
-    """Pick one entity → see every evaluator's grade + reasoning."""
+def _by_entity(entity_key: str, singular: str, plural: str) -> None:
+    """Pick one entity (a research note / strategy note / proposal) →
+    see every evaluator's grade + reasoning for it."""
     listing = queries.entity_list_with_scores(entity_key, days=f.days)
     if listing.empty:
-        st.info("No scored entities in the selected window.")
+        st.info(f"No scored {plural} in the selected window.")
         return
 
-    # Picker with avg-grade + scorer-count chip so the picker itself is informative.
     options = {
-        row["id"]: f"{row['title'][:80]}  ·  avg {row['avg_grade']:.2f}  ·  {row['scorer_count']} scorers  ·  {row['owner'] or '—'}"
+        row["id"]: (
+            f"{row['title'][:80]}  ·  avg {row['avg_grade']:.2f}  ·  "
+            f"{int(row['scorer_count'])} evaluators  ·  {row['owner'] or '—'}"
+        )
         for _, row in listing.iterrows()
     }
     picked_id = st.selectbox(
-        "Pick a proposal",
+        f"Pick a {singular}",
         options=list(options.keys()),
         format_func=lambda k: options[k],
-        key=f"prop_pick_{entity_key}",
+        key=f"entity_pick_{entity_key}",
     )
     if not picked_id:
         return
@@ -219,25 +234,27 @@ def _by_proposal(entity_key: str) -> None:
     meta = listing[listing["id"] == picked_id].iloc[0]
     cols = st.columns(4)
     cols[0].metric("Avg grade", f"{meta['avg_grade']:.2f}")
-    cols[1].metric("Scorers", int(meta["scorer_count"]))
+    cols[1].metric("Evaluators", int(meta["scorer_count"]))
     cols[2].metric("Last scored", str(meta["last_scored_on"]))
     cols[3].metric("Owner", meta["owner"] or "—")
 
     detail = queries.entity_score_breakdown(entity_key, picked_id)
     if detail.empty:
-        st.info("No score rows found for this proposal.")
+        st.info(f"No score rows found for this {singular}.")
         return
 
-    st.markdown(f"#### All scorer grades for `{meta['title'][:80]}`")
-    st.caption(f"_{len(detail)} scores · sorted by grade ascending (weakest first)._")
+    st.markdown(f"#### All evaluators that scored this {singular}")
+    st.caption(
+        f"_{len(detail)} evaluators · sorted by grade ascending "
+        f"(weakest first so the failures read first)._"
+    )
 
-    # Grade-band filter same as before
     bands = st.multiselect(
         "Filter by grade",
         options=[1, 2, 3, 4, 5],
         default=[],
         help="Empty = show all grades",
-        key=f"grade_filter_byprop_{entity_key}",
+        key=f"grade_filter_byentity_{entity_key}",
     )
     if bands:
         detail = detail[detail["grade"].isin(bands)]
@@ -245,7 +262,7 @@ def _by_proposal(entity_key: str) -> None:
     for _, r in detail.iterrows():
         scorer_label = label_for(r["scorer_id"])
         pill = _grade_pill(r["grade"], r["grade_label"])
-        with st.expander(f"{scorer_label}", expanded=False):
+        with st.expander(scorer_label, expanded=False):
             st.markdown(pill, unsafe_allow_html=True)
             if r["reasoning"]:
                 st.markdown("**Reasoning**")
@@ -255,19 +272,25 @@ def _by_proposal(entity_key: str) -> None:
                 st.markdown("**Key weakness**")
                 st.write(kw)
             st.caption(
-                f"Scorer: `{r['scorer_id']}`  ·  Model: `{r['model'] or 'unknown'}`  ·  Scored on {r['scored_on']}"
+                f"Evaluator: `{r['scorer_id']}`  ·  Model: "
+                f"`{r['model'] or 'unknown'}`  ·  Scored on {r['scored_on']}"
             )
 
 
-def _by_evaluator(entity_key: str) -> None:
-    """Pick one evaluator → see every entity it scored, with mean + reasoning."""
+def _by_evaluator(entity_key: str, singular: str, plural: str) -> None:
+    """Pick one evaluator → see every entity of THIS feature it scored,
+    with its mean grade across them all + each individual reasoning."""
     listing = queries.evaluator_list_with_scores(entity_key, days=f.days)
     if listing.empty:
-        st.info("No evaluator activity in the selected window.")
+        st.info(f"No evaluator activity for {plural} in the selected window.")
         return
 
     options = {
-        row["scorer_id"]: f"{label_for(row['scorer_id'])}  ·  mean {row['mean_grade']:.2f}  ·  {int(row['entities_scored'])} entities  ·  {int(row['total_scores'])} scores"
+        row["scorer_id"]: (
+            f"{label_for(row['scorer_id'])}  ·  mean {row['mean_grade']:.2f}  ·  "
+            f"{int(row['entities_scored'])} {plural}  ·  "
+            f"{int(row['total_scores'])} scores"
+        )
         for _, row in listing.iterrows()
     }
     picked = st.selectbox(
@@ -281,19 +304,24 @@ def _by_evaluator(entity_key: str) -> None:
 
     meta = listing[listing["scorer_id"] == picked].iloc[0]
     cols = st.columns(5)
-    cols[0].metric("Mean grade", f"{meta['mean_grade']:.2f}")
+    cols[0].metric(f"Mean grade across {plural}", f"{meta['mean_grade']:.2f}")
     cols[1].metric("Std dev", f"{meta['stddev']:.2f}")
     cols[2].metric("Min / Max", f"{int(meta['min_grade'])} / {int(meta['max_grade'])}")
-    cols[3].metric("Entities scored", int(meta["entities_scored"]))
+    cols[3].metric(f"{singular.title()}s scored", int(meta["entities_scored"]))
     cols[4].metric("Total scores", int(meta["total_scores"]))
 
     detail = queries.evaluator_score_breakdown(entity_key, picked, days=f.days)
     if detail.empty:
-        st.info("No score rows found for this evaluator.")
+        st.info(f"No score rows found for this evaluator on {plural}.")
         return
 
-    st.markdown(f"#### Every entity scored by `{label_for(picked)}`")
-    st.caption(f"_{len(detail)} entities · sorted by grade ascending (weakest first)._")
+    st.markdown(
+        f"#### Every {singular} that `{label_for(picked)}` scored"
+    )
+    st.caption(
+        f"_{len(detail)} {plural} · sorted by grade ascending "
+        f"(weakest first so the failures read first)._"
+    )
 
     bands = st.multiselect(
         "Filter by grade",
@@ -319,7 +347,10 @@ def _by_evaluator(entity_key: str) -> None:
             if kw and kw.lower() not in {"none", "n/a"}:
                 st.markdown("**Key weakness**")
                 st.write(kw)
-            st.caption(f"Entity id: `{r['entity_id']}`  ·  Model: `{r['model'] or 'unknown'}`")
+            st.caption(
+                f"{singular.title()} id: `{r['entity_id']}`  ·  Model: "
+                f"`{r['model'] or 'unknown'}`"
+            )
 
 
 # ── Tab 0 — Overview ──────────────────────────────────────────────
@@ -379,7 +410,7 @@ with tabs[2]:
 
 # ── Tab 3 — AI Drafts ─────────────────────────────────────────────
 with tabs[3]:
-    _entity_tab("ai_draft", "AI drafts (proposals)")
+    _entity_tab("ai_draft", "AI drafts")
 
 
 # ── Tab 4 — Generate a custom chart with Claude + Tufte skill ───

@@ -35,6 +35,8 @@ from src.db import run_query
 ENTITIES = {
     "research_note": {
         "label": "Research notes",
+        "singular": "research note",       # for picker prompts + headers
+        "scorer_prefix": "RN",              # codes are RN-001..RN-050
         "name_table": "concept_notes",
         "score_table": "concept_note_scores",
         "summary_table": "concept_note_score_summaries",
@@ -43,6 +45,8 @@ ENTITIES = {
     },
     "strategy_note": {
         "label": "Strategy notes",
+        "singular": "strategy note",
+        "scorer_prefix": "SN",              # codes are SN-001..SN-050
         "name_table": "strategy_notes",
         "score_table": "strategy_note_scores",
         "summary_table": "strategy_note_score_summaries",
@@ -50,7 +54,10 @@ ENTITIES = {
         "id_label": "strategy_note_id",
     },
     "ai_draft": {
-        "label": "AI drafts (proposals)",
+        "label": "AI drafts",
+        "singular": "proposal",             # AI drafts ARE proposals — the user's term
+        # 365 evaluators across 8 prefix families: CO, CV, EX, GK, IM, IP, PSC, PSG
+        "scorer_prefix": "CO/CV/EX/GK/IM/IP/PSC/PSG",
         "name_table": "proposals",
         "score_table": "proposal_scores",
         "summary_table": "proposal_score_summaries",
