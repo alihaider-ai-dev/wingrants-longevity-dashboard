@@ -24,8 +24,6 @@ actually running.
 
 from __future__ import annotations
 
-import json
-
 import pandas as pd
 import streamlit as st
 from dotenv import load_dotenv
@@ -33,11 +31,6 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from src import auth, charts, filters, queries
-from src.chart_generator import (
-    UnsafeQueryError,
-    build_chart_spec,
-    safe_run_query,
-)
 from src.scorer_names import label_for
 
 
@@ -83,7 +76,6 @@ tabs = st.tabs(
         "Research Notes",
         "Strategy Notes",
         "AI Drafts",
-        "✨ Generate",
     ]
 )
 
@@ -411,122 +403,6 @@ with tabs[2]:
 # ── Tab 3 — AI Drafts ─────────────────────────────────────────────
 with tabs[3]:
     _entity_tab("ai_draft", "AI drafts")
-
-
-# ── Tab 4 — Generate a custom chart with Claude + Tufte skill ───
-with tabs[4]:
-    st.markdown("### ✨ Generate a chart from your own query")
-    st.caption(
-        "Paste a SELECT, tell Claude what story to surface, and the "
-        "`wingrants-charts` skill (which imports the upstream Tufte "
-        "principles) returns a Vega-Lite spec. No code-exec — pure "
-        "declarative JSON, rendered through Streamlit's Vega-Lite "
-        "embed."
-    )
-
-    # ── Example pickers so the team doesn't start from a blank page.
-    examples = {
-        "Weekly mean grade for research notes": (
-            "SELECT date_trunc('week', scored_at)::date AS week,\n"
-            "       AVG(grade)::numeric(4,2) AS avg_grade,\n"
-            "       COUNT(*) AS scores\n"
-            "FROM concept_note_scores\n"
-            "WHERE scored_at >= NOW() - INTERVAL '180 days'\n"
-            "  AND grade IS NOT NULL\n"
-            "GROUP BY 1 ORDER BY 1",
-            "Time series of how research-note quality evolved over the last 6 months.",
-        ),
-        "Grade distribution by scorer (top 10 by volume)": (
-            "WITH top_scorers AS (\n"
-            "  SELECT evaluator_id FROM proposal_scores\n"
-            "  WHERE scored_at >= NOW() - INTERVAL '90 days'\n"
-            "  GROUP BY 1 ORDER BY COUNT(*) DESC LIMIT 10\n"
-            ")\n"
-            "SELECT s.evaluator_id AS scorer_id,\n"
-            "       s.grade,\n"
-            "       COUNT(*) AS n\n"
-            "FROM proposal_scores s\n"
-            "JOIN top_scorers t ON t.evaluator_id = s.evaluator_id\n"
-            "WHERE s.scored_at >= NOW() - INTERVAL '90 days'\n"
-            "  AND s.grade IS NOT NULL\n"
-            "GROUP BY 1, 2 ORDER BY 1, 2",
-            "How does each of the 10 most-active AI-draft evaluators distribute their grades? "
-            "Small multiples might be a good fit.",
-        ),
-        "Strategy-note grade mean vs stdev per week": (
-            "SELECT date_trunc('week', scored_at)::date AS week,\n"
-            "       AVG(grade)::numeric(4,2) AS mean_grade,\n"
-            "       COALESCE(STDDEV(grade), 0)::numeric(4,2) AS stddev,\n"
-            "       COUNT(*) AS scores\n"
-            "FROM strategy_note_scores\n"
-            "WHERE scored_at >= NOW() - INTERVAL '180 days'\n"
-            "GROUP BY 1 ORDER BY 1",
-            "Did strategy-note variance widen as the prompt evolved? Show mean and stddev together.",
-        ),
-    }
-
-    preset = st.selectbox(
-        "Start from an example (or write your own below):",
-        options=["— blank —"] + list(examples.keys()),
-        index=1,
-    )
-    default_sql, default_intent = ("", "")
-    if preset != "— blank —":
-        default_sql, default_intent = examples[preset]
-
-    sql = st.text_area(
-        "SELECT query (read-only, single statement)",
-        value=default_sql,
-        height=200,
-        key="gen_sql",
-    )
-    intent = st.text_input(
-        "What should the chart show? (optional — leave blank to let Claude pick)",
-        value=default_intent,
-        key="gen_intent",
-    )
-
-    if st.button("Generate chart", type="primary", key="gen_btn"):
-        try:
-            with st.spinner("Running query…"):
-                df, capped_sql = safe_run_query(sql)
-        except UnsafeQueryError as exc:
-            st.error(f"Query rejected: {exc}")
-            df = None
-        except Exception as exc:
-            st.error(f"Query failed: {exc}")
-            df = None
-
-        if df is not None and not df.empty:
-            # Pre-map scorer ids to human labels so whatever chart Claude
-            # designs renders the names by default.
-            for col in df.columns:
-                if col.lower() in {"scorer_id", "scorer", "evaluator_id"}:
-                    df[col] = df[col].astype(str).map(label_for)
-
-            st.success(f"Query returned {len(df):,} rows.")
-
-            col_data, col_chart = st.columns([1, 2])
-            with col_data:
-                st.markdown("##### Data sample")
-                st.dataframe(df.head(15), hide_index=True, use_container_width=True)
-
-            with col_chart:
-                try:
-                    with st.spinner("Claude is drafting a Tufte-compliant spec…"):
-                        spec = build_chart_spec(df, intent)
-                except Exception as exc:
-                    st.error(f"Couldn't build spec: {exc}")
-                else:
-                    st.markdown("##### Generated chart")
-                    try:
-                        st.vega_lite_chart(df, spec, use_container_width=True)
-                    except Exception as exc:
-                        st.error(f"Vega-Lite render failed: {exc}")
-                    with st.expander("View the Vega-Lite spec Claude returned"):
-                        st.code(json.dumps(spec, indent=2), language="json")
-        elif df is not None:
-            st.warning("Query ran but returned zero rows.")
 
 
 # ── Footer ────────────────────────────────────────────────────────
