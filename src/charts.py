@@ -194,6 +194,97 @@ def cohort_distribution(df: pd.DataFrame, title: str = "") -> alt.Chart:
     )
 
 
+# ── Tufte-compliant small multiples (one panel per surface) ──────
+#
+# Designed against the upstream `tufte` skill's ten principles. Audit
+# trail (the .claude/skills/wingrants-charts/SKILL.md hard-requires it):
+#
+#   ✓ #1 Show the data — every weekly mean is a visible point.
+#   ✓ #2 Data-ink ratio — line is data, points are data, that's it.
+#   ✓ #3 No frame, no Y gridlines, axis line only where data is
+#        (Altair's `domain=False` removes the rule when paired with
+#        empty tickColor).
+#   ✓ #4 Erase redundant — single mean line, no shaded ribbon (the
+#        outer trend_chart already covers the percentile question).
+#   ✓ #5 Honest scale — y domain [0,5] across all panels because
+#        grades ARE bounded 1-5; common domain lets the reader
+#        compare panel-to-panel without re-scaling.
+#   ✓ #6 SMALL MULTIPLES — this is the whole point. One column per
+#        surface so the reader spots which one is improving fastest
+#        without juggling four overlapping lines on one axis.
+#   ✓ #7 Layering — gridlines absent; data line is the only mark.
+#   ✓ #8 Micro/macro — column titles read across the room; per-week
+#        points read up close via tooltip.
+#   ✓ #9 Smallest effective difference — only coral; no per-surface
+#        colour key needed when the panel TITLE already identifies it.
+#   ✓ #10 Word-data integration — title sits adjacent to each panel,
+#        no detached legend.
+
+def small_multiples_trend(df: pd.DataFrame) -> alt.Chart:
+    """One mini line-chart per surface, shared 1–5 y-scale.
+
+    Expects the same long-format DataFrame as `cross_entity_chart`:
+    columns `entity`, `bucket`, `avg_grade`, `scores`.
+    """
+    if df.empty:
+        return _empty("No scores in this window.")
+    return (
+        alt.Chart(df)
+        .mark_line(color=ACCENT_DEEP, strokeWidth=1.8,
+                   point=alt.OverlayMarkDef(filled=True, size=28, color=ACCENT_DEEP))
+        .encode(
+            x=alt.X(
+                "bucket:T",
+                axis=alt.Axis(
+                    format="%b %d",
+                    title=None,
+                    labelColor=INK_SOFT,
+                    labelFontSize=10,
+                    tickColor=RULE,
+                    domainColor=RULE,
+                    grid=False,
+                ),
+            ),
+            y=alt.Y(
+                "avg_grade:Q",
+                scale=alt.Scale(domain=[0, 5]),
+                axis=alt.Axis(
+                    title=None,
+                    labelColor=INK_SOFT,
+                    labelFontSize=10,
+                    tickColor=RULE,
+                    domainColor=RULE,
+                    grid=False,                      # Tufte #3 — kill the grid
+                    values=[0, 2.5, 5],              # Tufte #4 — only what's needed
+                ),
+            ),
+            tooltip=[
+                alt.Tooltip("entity:N", title="Surface"),
+                alt.Tooltip("bucket:T", title="Week of", format="%d %b %Y"),
+                alt.Tooltip("avg_grade:Q", title="Avg grade", format=".2f"),
+                alt.Tooltip("scores:Q", title="Scores"),
+            ],
+        )
+        .properties(width=200, height=120)
+        .facet(
+            column=alt.Column(
+                "entity:N",
+                header=alt.Header(
+                    title=None,
+                    labelColor=INK,
+                    labelFontSize=12,
+                    labelFontWeight="bold",
+                    labelAnchor="start",
+                    labelPadding=8,
+                ),
+                sort=alt.SortField("entity"),
+            ),
+        )
+        .resolve_scale(y="shared")                   # Tufte #5/#6 — shared scale
+        .configure_view(stroke=None)                 # Tufte #3 — drop frame box
+    )
+
+
 # ── Cross-entity overview line ─────────────────────────────────────
 
 def cross_entity_chart(df: pd.DataFrame) -> alt.Chart:

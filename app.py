@@ -233,11 +233,27 @@ with tabs[0]:
             f"${metrics['approx_cost_usd'].sum():.2f}",
         )
 
+        cross_df = queries.cross_entity_trend(days=f.days, granularity=f.granularity)
+
         st.markdown("#### Quality trend by surface")
         st.altair_chart(
-            charts.cross_entity_chart(queries.cross_entity_trend(days=f.days, granularity=f.granularity)),
+            charts.cross_entity_chart(cross_df),
             use_container_width=True,
         )
+
+        # ── Tufte-skill output: same data, small-multiples treatment.
+        # Generated via the `.claude/skills/wingrants-charts` project
+        # skill which wraps the upstream `tufte` skill. Read the
+        # audit-trail comment in `charts.small_multiples_trend` for
+        # the principle-by-principle accounting.
+        st.markdown("#### Tufte small multiples (skill test)")
+        st.caption(
+            "Same underlying data, redrawn against the ten Tufte "
+            "principles by the `wingrants-charts` project skill — "
+            "one panel per surface, shared 1-5 scale, no gridlines, "
+            "no frame, single accent colour, direct titles."
+        )
+        st.altair_chart(charts.small_multiples_trend(cross_df), use_container_width=False)
 
         st.markdown("#### Per-surface summary")
         st.dataframe(metrics, hide_index=True, use_container_width=True)
