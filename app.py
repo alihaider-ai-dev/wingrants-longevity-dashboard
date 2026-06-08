@@ -221,9 +221,10 @@ def _heatmap_view(entity_key: str, singular: str, plural: str) -> None:
     with col_r:
         weak_only = st.toggle(
             "Focus on weak scores only (≤ 3)",
-            value=True,
+            value=False,
             key=f"weak_{entity_key}",
-            help="Hide GOOD + EXCELLENT cells so the failures pop.",
+            help="On = hide GOOD + EXCELLENT cells so the failures pop. "
+                 "Off = show the whole grid (default).",
         )
 
     df = queries.heatmap_grid(
@@ -255,6 +256,23 @@ def _heatmap_view(entity_key: str, singular: str, plural: str) -> None:
         )
     df["scored_on"] = df["scored_on"].astype(str)
     df["grade"] = df["grade"].astype(int)
+
+    # Tooltip-friendly truncations — Altair renders one line per tooltip
+    # field, so keep these short or the hover box turns into a wall.
+    def _shorten(s, limit=320):
+        if s is None or (isinstance(s, float) and pd.isna(s)):
+            return ""
+        s = str(s).strip().replace("\r\n", " ").replace("\n", " · ")
+        return s if len(s) <= limit else s[: limit - 1] + "…"
+
+    if "reasoning" in df.columns:
+        df["reasoning_short"] = df["reasoning"].apply(_shorten)
+    if "key_weakness" in df.columns:
+        df["weakness_short"] = df["key_weakness"].apply(
+            lambda v: _shorten(v, limit=200)
+            if v and str(v).lower() not in {"none", "n/a", "nan", ""}
+            else ""
+        )
 
     # Headline metric strip — totals so the team sees pattern density.
     cols = st.columns(4)

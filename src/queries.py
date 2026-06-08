@@ -498,6 +498,8 @@ def heatmap_grid(
                 s.{fk} AS entity_id,
                 s.grade,
                 s.grade_label,
+                s.reasoning,
+                s.key_weakness,
                 s.scored_at::date AS scored_on
             FROM {cfg["score_table"]} s
             JOIN recent_entities r ON r.entity_id = s.{fk}

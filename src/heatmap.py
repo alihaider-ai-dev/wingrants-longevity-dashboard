@@ -48,13 +48,15 @@ def render_heatmap(
     """Build the Altair heatmap from long-form data.
 
     Expected columns on ``df``::
-        scorer_label   str   — 'RN-001 · Decision Panel Layout'
-        scorer_mean    float — used for Y-axis sort order
-        entity_short   str   — truncated entity title (X axis label)
-        entity_full    str   — full title (tooltip)
-        grade          int   — 1..5
-        grade_label    str   — BAD / FAIR / GOOD / …
-        scored_on      str   — ISO date
+        scorer_label    str   — 'RN-001 · Decision Panel Layout'
+        scorer_mean     float — used for Y-axis sort order
+        entity_short    str   — truncated entity title (X axis label)
+        entity_full     str   — full title (tooltip)
+        grade           int   — 1..5
+        grade_label     str   — BAD / FAIR / GOOD / …
+        scored_on       str   — ISO date
+        reasoning_short str   — truncated reasoning for hover (optional)
+        weakness_short  str   — truncated key weakness for hover (optional)
     """
     if df.empty:
         return alt.Chart(pd.DataFrame({"x": [], "y": []})).mark_text(
@@ -121,6 +123,14 @@ def render_heatmap(
             alt.Tooltip("grade:Q", title="Grade"),
             alt.Tooltip("grade_label:N", title="Quality"),
             alt.Tooltip("scored_on:N", title="Scored"),
+            *(
+                [alt.Tooltip("reasoning_short:N", title="Reasoning")]
+                if "reasoning_short" in df.columns else []
+            ),
+            *(
+                [alt.Tooltip("weakness_short:N", title="Key weakness")]
+                if "weakness_short" in df.columns else []
+            ),
         ],
     )
 
