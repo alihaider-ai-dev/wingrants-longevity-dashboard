@@ -537,6 +537,101 @@ def heatmap_grid(
     )
 
 
+# ── Trial funnel ────────────────────────────────────────────────────
+
+
+def trial_funnel(days: int = 30) -> pd.DataFrame:
+    """One row per trial proposal in the lookback window, with every
+    funnel-stage flag the dashboard renders.
+
+    The team's mental model is:
+        Created → Uploaded → Preflighted → Engine started → Completed
+
+    Each subsequent stage is strictly downstream of the prior one — a
+    proposal can't run the engine without uploading documents first,
+    and can't complete without the engine actually running. That makes
+    it possible to render a true funnel rather than a soft summary.
+
+    Returns columns:
+        proposal_id, name, user_email, user_name, user_org,
+        created_at, doc_count, doc_filenames, preflight_status,
+        preflight_run_at, phase, batch_job_id, last_heartbeat_at,
+        status, output_chars, has_pdf, has_docx, completed_at,
+        elapsed_minutes, stage  (Created / Uploaded / Preflighted /
+                                 Engine started / Completed)
+    """
+    sql = """
+        WITH docs AS (
+            SELECT
+                proposal_id,
+                COUNT(*) AS doc_count,
+                STRING_AGG(filename, ', ' ORDER BY created_at) AS doc_filenames,
+                MIN(created_at) AS first_upload_at,
+                MAX(created_at) AS last_upload_at
+            FROM documents
+            WHERE proposal_id IS NOT NULL
+            GROUP BY proposal_id
+        )
+        SELECT
+            p.id AS proposal_id,
+            COALESCE(NULLIF(p.name, ''), '— untitled —') AS name,
+            u.email AS user_email,
+            TRIM(COALESCE(u.first_name, '') || ' ' || COALESCE(u.last_name, '')) AS user_name,
+            u.organization AS user_org,
+            p.created_at,
+            COALESCE(d.doc_count, 0) AS doc_count,
+            d.doc_filenames,
+            d.first_upload_at,
+            p.preflight_status,
+            p.preflight_run_at,
+            p.phase,
+            p.batch_job_id,
+            p.last_heartbeat_at,
+            p.status,
+            LENGTH(COALESCE(p.output_text, '')) AS output_chars,
+            (p.pdf_s3_key IS NOT NULL AND p.pdf_s3_key <> '') AS has_pdf,
+            (p.docx_s3_key IS NOT NULL AND p.docx_s3_key <> '') AS has_docx,
+            -- Completion timestamp: prefer last_heartbeat_at when the
+            -- engine actually ran, else preflight_approved_at, else
+            -- nothing.
+            CASE
+                WHEN LENGTH(COALESCE(p.output_text, '')) > 0
+                  OR (p.pdf_s3_key IS NOT NULL AND p.pdf_s3_key <> '')
+                THEN p.last_heartbeat_at
+                ELSE NULL
+            END AS completed_at,
+            -- Elapsed minutes from creation to last activity (heartbeat
+            -- or upload), useful for spotting drop-offs.
+            EXTRACT(EPOCH FROM (
+                COALESCE(p.last_heartbeat_at, d.last_upload_at, NOW()) - p.created_at
+            )) / 60.0 AS elapsed_minutes,
+            -- Stage derivation — strictly cascading.
+            CASE
+                WHEN LENGTH(COALESCE(p.output_text, '')) > 0
+                  OR (p.pdf_s3_key IS NOT NULL AND p.pdf_s3_key <> '')
+                  OR LOWER(COALESCE(p.status, '')) IN ('completed','done','succeeded','finished')
+                    THEN 'Completed'
+                WHEN p.batch_job_id IS NOT NULL
+                  OR p.phase IS NOT NULL
+                  OR p.last_heartbeat_at IS NOT NULL
+                    THEN 'Engine started'
+                WHEN COALESCE(p.preflight_status, 'not_run') <> 'not_run'
+                  OR p.preflight_run_at IS NOT NULL
+                    THEN 'Preflighted'
+                WHEN COALESCE(d.doc_count, 0) > 0
+                    THEN 'Uploaded'
+                ELSE 'Created'
+            END AS stage
+        FROM proposals p
+        LEFT JOIN users u ON u.id = p.user_id
+        LEFT JOIN docs d ON d.proposal_id = p.id
+        WHERE p.is_trial = TRUE
+          AND p.created_at >= NOW() - (:days || ' days')::interval
+        ORDER BY p.created_at DESC
+    """
+    return run_query(sql, {"days": days})
+
+
 # ── Cross-cutting trend (for the Overview chart) ───────────────────
 
 def cross_entity_trend(days: int = 90, granularity: str = "week") -> pd.DataFrame:

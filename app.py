@@ -78,6 +78,7 @@ tabs = st.tabs(
         "Research Notes",
         "Strategy Notes",
         "AI Drafts",
+        "Trials",
     ]
 )
 
@@ -534,6 +535,173 @@ with tabs[2]:
 # ── Tab 3 — AI Drafts ─────────────────────────────────────────────
 with tabs[3]:
     _entity_tab("ai_draft", "AI drafts")
+
+
+# ── Tab 4 — Trials ────────────────────────────────────────────────
+
+
+_FUNNEL_STAGES = [
+    "Created",
+    "Uploaded",
+    "Preflighted",
+    "Engine started",
+    "Completed",
+]
+
+_STAGE_COLOUR = {
+    "Created":         ("#F4EEE7", "#6D6682"),  # muted (no signal yet)
+    "Uploaded":        ("#FBECC4", "#8F6718"),  # warm sun
+    "Preflighted":     ("#F4A988", "#5C2412"),  # coral mid
+    "Engine started":  ("#A5D49E", "#1F4B1D"),  # mint
+    "Completed":       ("#5BA254", "#FFFFFF"),  # deep mint
+}
+
+
+def _stage_pill(stage: str) -> str:
+    bg, fg = _STAGE_COLOUR.get(stage, ("#F4EEE7", "#6D6682"))
+    return (
+        f"<span style='display:inline-block;padding:2px 10px;border-radius:999px;"
+        f"background:{bg};color:{fg};font-weight:600;font-size:11px;"
+        f"letter-spacing:0.04em;'>{stage.upper()}</span>"
+    )
+
+
+def _fmt_minutes(mins) -> str:
+    if mins is None or pd.isna(mins):
+        return "—"
+    m = float(mins)
+    if m < 1:
+        return "< 1 min"
+    if m < 60:
+        return f"{m:.0f} min"
+    if m < 24 * 60:
+        return f"{m / 60:.1f} h"
+    return f"{m / (24 * 60):.1f} d"
+
+
+with tabs[4]:
+    st.markdown("### Trial funnel")
+    st.caption(
+        "Where every trial user gets to in the flow — created the proposal, "
+        "uploaded any documents, ran preflight, started the engine, hit "
+        "completion. The 'Trial STARTED' admin email fires on row creation, "
+        "so a user can have that email and still be stuck at the 'Created' "
+        "stage if they never uploaded a concept note."
+    )
+
+    trials = queries.trial_funnel(days=f.days)
+    if trials.empty:
+        st.info("No trials kicked off in the selected window.")
+    else:
+        # ── Funnel strip — counts per stage, in order ──────────────
+        counts = trials["stage"].value_counts().to_dict()
+        ordered_counts = [counts.get(s, 0) for s in _FUNNEL_STAGES]
+        total = int(trials.shape[0])
+
+        cols = st.columns(len(_FUNNEL_STAGES))
+        for col, stage, n in zip(cols, _FUNNEL_STAGES, ordered_counts):
+            with col:
+                pct = (n / total * 100) if total else 0
+                col.markdown(_stage_pill(stage), unsafe_allow_html=True)
+                col.metric(label="", value=int(n), delta=f"{pct:.0f}% of trials")
+
+        st.markdown("")  # spacer
+
+        # ── Per-trial table ────────────────────────────────────────
+        view = trials.copy()
+        view["Stage"] = view["stage"].apply(_stage_pill)
+        view["User"] = view.apply(
+            lambda r: (
+                (r["user_name"].strip() if isinstance(r["user_name"], str) and r["user_name"].strip()
+                 else (r["user_email"] or "—"))
+            ),
+            axis=1,
+        )
+        view["Email"] = view["user_email"].fillna("—")
+        view["Org"] = view["user_org"].fillna("—")
+        view["Created"] = pd.to_datetime(view["created_at"]).dt.strftime("%d %b %H:%M")
+        view["Docs"] = view["doc_count"].astype(int)
+        view["Preflight"] = view["preflight_status"].fillna("not_run")
+        view["Engine"] = view.apply(
+            lambda r: (
+                (r["phase"] or "")
+                if pd.notna(r["phase"]) and (r["phase"] or "")
+                else ("running" if pd.notna(r["batch_job_id"]) else "—")
+            ),
+            axis=1,
+        )
+        view["Elapsed"] = view["elapsed_minutes"].apply(_fmt_minutes)
+        view["Proposal"] = view["name"].astype(str).str.slice(0, 60)
+        view["ID"] = view["proposal_id"]
+
+        # Build the markdown table — st.dataframe doesn't render HTML
+        # in cells, so we use markdown with a thin custom style.
+        st.markdown("#### Per-trial progress")
+        st.caption(
+            f"_{total} trial{'s' if total != 1 else ''} in the last {f.days} days — newest first._"
+        )
+
+        # Stage filter chips so the team can isolate "stuck at Created"
+        # quickly without scrolling.
+        filt = st.multiselect(
+            "Filter by stage",
+            options=_FUNNEL_STAGES,
+            default=[],
+            help="Empty = show all stages.",
+        )
+        if filt:
+            view = view[view["stage"].isin(filt)]
+
+        # Render as cards — Streamlit's dataframe can't show pills + HTML,
+        # and the columns are too wide for one row anyway.
+        for _, r in view.iterrows():
+            with st.container(border=True):
+                top = st.columns([3, 1, 1, 1])
+                with top[0]:
+                    st.markdown(
+                        f"**{r['Proposal']}**  \n"
+                        f"<span style='color:#6D6682;font-size:11px;'>"
+                        f"`{r['ID']}` · {r['User']} · {r['Email']} · {r['Org']}"
+                        f"</span>",
+                        unsafe_allow_html=True,
+                    )
+                with top[1]:
+                    st.markdown(r["Stage"], unsafe_allow_html=True)
+                with top[2]:
+                    st.markdown(
+                        f"<span style='color:#6D6682;font-size:11px;text-transform:uppercase;letter-spacing:0.06em;'>Docs</span><br>"
+                        f"<span style='font-size:14px;font-weight:600;color:#1A1530;'>{int(r['Docs'])}</span>",
+                        unsafe_allow_html=True,
+                    )
+                with top[3]:
+                    st.markdown(
+                        f"<span style='color:#6D6682;font-size:11px;text-transform:uppercase;letter-spacing:0.06em;'>Elapsed</span><br>"
+                        f"<span style='font-size:14px;font-weight:600;color:#1A1530;'>{r['Elapsed']}</span>",
+                        unsafe_allow_html=True,
+                    )
+
+                # Detail row — three sub-columns: timestamps, engine, files
+                det = st.columns(3)
+                det[0].markdown(
+                    f"<span style='color:#6D6682;font-size:11px;'>Created</span><br>"
+                    f"<span style='font-size:12px;'>{r['Created']}</span>",
+                    unsafe_allow_html=True,
+                )
+                det[1].markdown(
+                    f"<span style='color:#6D6682;font-size:11px;'>Preflight</span><br>"
+                    f"<span style='font-size:12px;font-family:monospace;'>{r['Preflight']}</span>",
+                    unsafe_allow_html=True,
+                )
+                det[2].markdown(
+                    f"<span style='color:#6D6682;font-size:11px;'>Engine phase</span><br>"
+                    f"<span style='font-size:12px;font-family:monospace;'>{r['Engine']}</span>",
+                    unsafe_allow_html=True,
+                )
+
+                # Uploaded files — only render if there are any
+                fns = r.get("doc_filenames")
+                if isinstance(fns, str) and fns.strip():
+                    st.caption(f"📎 Uploaded: {fns}")
 
 
 # ── Footer ────────────────────────────────────────────────────────
