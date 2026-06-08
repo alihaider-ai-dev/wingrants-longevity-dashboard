@@ -537,6 +537,191 @@ def heatmap_grid(
     )
 
 
+# ── Cross-surface user activity ─────────────────────────────────────
+
+
+def user_activity(days: int = 7, trial_only: bool = False) -> pd.DataFrame:
+    """One row per user action across ALL surfaces, newest-first.
+
+    Surfaces covered:
+        trial         — proposals.is_trial = TRUE (Section-1.1 trials)
+        proposal      — proposals.is_trial = FALSE (paid + standard runs)
+        consortium    — consortiums (consortium builder)
+        independent   — independent_evaluations
+        research      — concept_notes (the BE calls them concept notes;
+                        the team calls them research notes externally)
+        strategy      — strategy_notes
+
+    For each surface we render an Item Started + Item Completed + Item
+    Failed timeline (Failed = error column populated OR status='Failed').
+
+    Stage column is one of: 'Created', 'Engine started', 'Completed', 'Failed'.
+
+    Returns columns:
+        when, surface, stage, item_id, item_title, user_email, user_name,
+        user_org, phase, batch_job_id, has_error, is_trial.
+    """
+    pieces = []
+
+    # Proposals (trials + standard) — built using EXISTING knowledge of
+    # the proposals table from trial_funnel(). Doc-count joins skipped
+    # here for speed; the Trials tab still has the rich per-trial view.
+    pieces.append("""
+        SELECT
+            p.created_at AS when_at,
+            CASE WHEN p.is_trial THEN 'trial' ELSE 'proposal' END AS surface,
+            CASE
+                WHEN LENGTH(COALESCE(p.output_text, '')) > 0
+                  OR (p.pdf_s3_key IS NOT NULL AND p.pdf_s3_key <> '')
+                  OR LOWER(COALESCE(p.status, '')) IN ('completed','done','succeeded','finished')
+                    THEN 'Completed'
+                WHEN LOWER(COALESCE(p.status, '')) IN ('failed','error')
+                    THEN 'Failed'
+                WHEN p.batch_job_id IS NOT NULL
+                  OR p.phase IS NOT NULL
+                  OR p.last_heartbeat_at IS NOT NULL
+                    THEN 'Engine started'
+                ELSE 'Created'
+            END AS stage,
+            p.id AS item_id,
+            COALESCE(NULLIF(p.name, ''), '— untitled —') AS item_title,
+            u.email AS user_email,
+            TRIM(COALESCE(u.first_name, '') || ' ' || COALESCE(u.last_name, '')) AS user_name,
+            u.organization AS user_org,
+            p.phase,
+            p.batch_job_id,
+            FALSE AS has_error,
+            p.is_trial
+        FROM proposals p
+        LEFT JOIN users u ON u.id = p.user_id
+        WHERE p.created_at >= NOW() - (:days || ' days')::interval
+    """)
+
+    # Consortium builder — same status/phase semantics
+    pieces.append("""
+        SELECT
+            c.created_at AS when_at,
+            'consortium' AS surface,
+            CASE
+                WHEN LOWER(COALESCE(c.status, '')) IN ('completed','done','succeeded','finished')
+                    THEN 'Completed'
+                WHEN LOWER(COALESCE(c.status, '')) IN ('failed','error')
+                  OR c.error IS NOT NULL AND c.error <> ''
+                    THEN 'Failed'
+                WHEN c.batch_job_id IS NOT NULL
+                  OR c.phase IS NOT NULL
+                    THEN 'Engine started'
+                ELSE 'Created'
+            END AS stage,
+            c.id AS item_id,
+            COALESCE(NULLIF(c.title, ''), '— untitled —') AS item_title,
+            u.email AS user_email,
+            TRIM(COALESCE(u.first_name, '') || ' ' || COALESCE(u.last_name, '')) AS user_name,
+            u.organization AS user_org,
+            c.phase,
+            c.batch_job_id,
+            (c.error IS NOT NULL AND c.error <> '') AS has_error,
+            FALSE AS is_trial
+        FROM consortiums c
+        LEFT JOIN users u ON u.id = c.user_id
+        WHERE c.created_at >= NOW() - (:days || ' days')::interval
+    """)
+
+    # Independent evaluations
+    pieces.append("""
+        SELECT
+            e.created_at AS when_at,
+            'independent' AS surface,
+            CASE
+                WHEN LOWER(COALESCE(e.status, '')) IN ('completed','done','succeeded','finished')
+                    THEN 'Completed'
+                WHEN LOWER(COALESCE(e.status, '')) IN ('failed','error')
+                    THEN 'Failed'
+                WHEN e.batch_job_id IS NOT NULL
+                  OR e.phase IS NOT NULL
+                    THEN 'Engine started'
+                ELSE 'Created'
+            END AS stage,
+            e.id AS item_id,
+            COALESCE(NULLIF(e.name, ''), '— untitled —') AS item_title,
+            u.email AS user_email,
+            TRIM(COALESCE(u.first_name, '') || ' ' || COALESCE(u.last_name, '')) AS user_name,
+            u.organization AS user_org,
+            e.phase,
+            e.batch_job_id,
+            FALSE AS has_error,
+            FALSE AS is_trial
+        FROM independent_evaluations e
+        LEFT JOIN users u ON u.id = e.user_id
+        WHERE e.created_at >= NOW() - (:days || ' days')::interval
+    """)
+
+    # Research notes (BE: concept_notes)
+    pieces.append("""
+        SELECT
+            n.created_at AS when_at,
+            'research' AS surface,
+            CASE
+                WHEN LOWER(COALESCE(n.status, '')) IN ('completed','done','succeeded','finished')
+                    THEN 'Completed'
+                WHEN LOWER(COALESCE(n.status, '')) IN ('failed','error')
+                    THEN 'Failed'
+                WHEN n.batch_job_id IS NOT NULL
+                  OR n.phase IS NOT NULL
+                    THEN 'Engine started'
+                ELSE 'Created'
+            END AS stage,
+            n.id AS item_id,
+            COALESCE(NULLIF(n.name, ''), '— untitled —') AS item_title,
+            u.email AS user_email,
+            TRIM(COALESCE(u.first_name, '') || ' ' || COALESCE(u.last_name, '')) AS user_name,
+            u.organization AS user_org,
+            n.phase,
+            n.batch_job_id,
+            FALSE AS has_error,
+            FALSE AS is_trial
+        FROM concept_notes n
+        LEFT JOIN users u ON u.id = n.user_id
+        WHERE n.created_at >= NOW() - (:days || ' days')::interval
+    """)
+
+    # Strategy notes
+    pieces.append("""
+        SELECT
+            n.created_at AS when_at,
+            'strategy' AS surface,
+            CASE
+                WHEN LOWER(COALESCE(n.status, '')) IN ('completed','done','succeeded','finished')
+                    THEN 'Completed'
+                WHEN LOWER(COALESCE(n.status, '')) IN ('failed','error')
+                    THEN 'Failed'
+                WHEN n.batch_job_id IS NOT NULL
+                  OR n.phase IS NOT NULL
+                    THEN 'Engine started'
+                ELSE 'Created'
+            END AS stage,
+            n.id AS item_id,
+            COALESCE(NULLIF(n.name, ''), '— untitled —') AS item_title,
+            u.email AS user_email,
+            TRIM(COALESCE(u.first_name, '') || ' ' || COALESCE(u.last_name, '')) AS user_name,
+            u.organization AS user_org,
+            n.phase,
+            n.batch_job_id,
+            FALSE AS has_error,
+            FALSE AS is_trial
+        FROM strategy_notes n
+        LEFT JOIN users u ON u.id = n.user_id
+        WHERE n.created_at >= NOW() - (:days || ' days')::interval
+    """)
+
+    sql = " UNION ALL ".join(pieces) + " ORDER BY when_at DESC"
+
+    df = run_query(sql, {"days": days})
+    if trial_only and not df.empty:
+        df = df[df["is_trial"] == True]
+    return df
+
+
 # ── Trial funnel ────────────────────────────────────────────────────
 
 

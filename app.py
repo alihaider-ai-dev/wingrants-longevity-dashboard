@@ -78,7 +78,7 @@ tabs = st.tabs(
         "Research Notes",
         "Strategy Notes",
         "AI Drafts",
-        "Trials",
+        "Activity",
     ]
 )
 
@@ -579,14 +579,140 @@ def _fmt_minutes(mins) -> str:
     return f"{m / (24 * 60):.1f} d"
 
 
+_SURFACE_LABELS = {
+    "trial":       "Section-1.1 trial",
+    "proposal":    "AI draft (paid)",
+    "consortium":  "Consortium builder",
+    "independent": "Independent eval",
+    "research":    "Research note",
+    "strategy":    "Strategy note",
+}
+_SURFACE_COLOUR = {
+    "trial":       ("#F4A988", "#5C2412"),
+    "proposal":    ("#A5D49E", "#1F4B1D"),
+    "consortium":  ("#FBECC4", "#8F6718"),
+    "independent": ("#E0D4F0", "#3A1A56"),
+    "research":    ("#D0E0F0", "#1A3056"),
+    "strategy":    ("#FBE2D0", "#5C3812"),
+}
+
+
+def _surface_pill(surface: str) -> str:
+    bg, fg = _SURFACE_COLOUR.get(surface, ("#F4EEE7", "#6D6682"))
+    label = _SURFACE_LABELS.get(surface, surface.title())
+    return (
+        f"<span style='display:inline-block;padding:2px 10px;border-radius:999px;"
+        f"background:{bg};color:{fg};font-weight:600;font-size:10.5px;"
+        f"letter-spacing:0.04em;text-transform:uppercase;'>{label}</span>"
+    )
+
+
 with tabs[4]:
+    st.markdown("### Cross-surface activity")
+    st.caption(
+        "Every user action across the platform, newest-first — trials, paid "
+        "AI drafts, consortium builds, independent evaluations, research "
+        "notes, strategy notes. The 'Trial STARTED' admin email fires on row "
+        "creation, so a user can have that email and still be at 'Created' "
+        "if they never moved further."
+    )
+
+    col_l, col_r = st.columns([3, 2])
+    with col_l:
+        surfaces_filter = st.multiselect(
+            "Surfaces",
+            options=list(_SURFACE_LABELS.keys()),
+            default=list(_SURFACE_LABELS.keys()),
+            format_func=lambda s: _SURFACE_LABELS.get(s, s),
+        )
+    with col_r:
+        trial_only = st.toggle(
+            "Trials only",
+            value=False,
+            help="On = restrict to is_trial=TRUE rows (Section-1.1 trials).",
+        )
+
+    activity = queries.user_activity(days=f.days, trial_only=trial_only)
+    if activity.empty:
+        st.info("No activity in the selected window.")
+    elif surfaces_filter and not all(s in surfaces_filter for s in _SURFACE_LABELS.keys()):
+        activity = activity[activity["surface"].isin(surfaces_filter)]
+
+    if not activity.empty:
+        # ── Surface × Stage matrix at the top ────────────────────
+        cross = (
+            activity
+            .groupby(["surface", "stage"])
+            .size()
+            .unstack(fill_value=0)
+        )
+        # Force a stable column order
+        stage_order = ["Created", "Engine started", "Completed", "Failed"]
+        for s in stage_order:
+            if s not in cross.columns:
+                cross[s] = 0
+        cross = cross[stage_order]
+        cross.index = [_SURFACE_LABELS.get(s, s) for s in cross.index]
+
+        st.markdown("#### Surface × stage matrix")
+        st.dataframe(cross, use_container_width=True)
+
+        # ── Per-row cards ─────────────────────────────────────────
+        st.markdown(f"#### Activity feed — {len(activity)} events")
+        st.caption(
+            f"_Newest first. Window: last {f.days} days. Surfaces: "
+            f"{', '.join(_SURFACE_LABELS.get(s, s) for s in surfaces_filter)}._"
+        )
+
+        # Render the trials funnel-style for trial-surface rows + a
+        # compact 1-line card for non-trial rows so the feed stays scannable.
+        for _, r in activity.iterrows():
+            with st.container(border=True):
+                top = st.columns([3, 1, 1, 1])
+                with top[0]:
+                    title = str(r["item_title"])[:80]
+                    user = (
+                        (r["user_name"].strip() if isinstance(r["user_name"], str) and r["user_name"].strip()
+                         else (r["user_email"] or "—"))
+                    )
+                    org_str = f" · {r['user_org']}" if r["user_org"] else ""
+                    st.markdown(
+                        f"**{title}**  \n"
+                        f"<span style='color:#6D6682;font-size:11px;'>"
+                        f"`{r['item_id']}` · {user} · {r['user_email'] or '—'}{org_str}"
+                        f"</span>",
+                        unsafe_allow_html=True,
+                    )
+                with top[1]:
+                    st.markdown(_surface_pill(r["surface"]), unsafe_allow_html=True)
+                with top[2]:
+                    st.markdown(_stage_pill(r["stage"]), unsafe_allow_html=True)
+                with top[3]:
+                    when = pd.to_datetime(r["when_at"]).strftime("%d %b %H:%M")
+                    st.markdown(
+                        f"<span style='color:#6D6682;font-size:11px;text-transform:uppercase;letter-spacing:0.06em;'>When</span><br>"
+                        f"<span style='font-size:12px;color:#1A1530;'>{when}</span>",
+                        unsafe_allow_html=True,
+                    )
+
+                # Optional 2nd line — phase + batch + has_error
+                bits = []
+                if isinstance(r.get("phase"), str) and r["phase"]:
+                    bits.append(f"phase=`{r['phase']}`")
+                if r.get("batch_job_id"):
+                    bits.append(f"batch=`{str(r['batch_job_id'])[:12]}…`")
+                if r.get("has_error"):
+                    bits.append("⚠️ error column populated")
+                if bits:
+                    st.caption(" · ".join(bits))
+
+    # ── Trial funnel — kept underneath for the deeper trial view ──
+    st.markdown("---")
     st.markdown("### Trial funnel")
     st.caption(
-        "Where every trial user gets to in the flow — created the proposal, "
-        "uploaded any documents, ran preflight, started the engine, hit "
-        "completion. The 'Trial STARTED' admin email fires on row creation, "
-        "so a user can have that email and still be stuck at the 'Created' "
-        "stage if they never uploaded a concept note."
+        "Detailed per-trial card view including document uploads + preflight + "
+        "elapsed time. Same data as the Trials filter above but with the rich "
+        "fields surfaced."
     )
 
     trials = queries.trial_funnel(days=f.days)
