@@ -538,6 +538,12 @@ def heatmap_grid(
 
 
 # ── Cross-surface user activity ─────────────────────────────────────
+# (Module-version marker — bumped to force Streamlit Cloud to reload
+# the bytecode cache after the 3c71238 deploy half-applied. Streamlit
+# Cloud sometimes hot-reloads app.py without re-importing dependent
+# `src.*` modules; bumping a comment in this file invalidates the .pyc
+# and forces a clean import on the next build.)
+_QUERY_MODULE_REV = "2026-06-08-r2"
 
 
 def user_activity(days: int = 7, trial_only: bool = False) -> pd.DataFrame:
