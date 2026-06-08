@@ -440,6 +440,101 @@ def latest_score_details(
     return run_query(sql, {"days": days, "limit": limit})
 
 
+# ── Scorer × entity heatmap data ──────────────────────────────────
+
+
+def heatmap_grid(
+    entity_key: str,
+    days: int = 90,
+    entity_limit: int = 30,
+    weak_only: bool = False,
+) -> pd.DataFrame:
+    """Long-form (scorer × entity) grid for the heatmap view.
+
+    Returns one row per (scorer, entity) pair with the LATEST grade in
+    the window — older grades on the same pair are dropped via a
+    DISTINCT ON so the heatmap stays one cell per pair.
+
+    Args:
+        entity_key: 'research_note' / 'strategy_note' / 'ai_draft'.
+        days: lookback window for scores.
+        entity_limit: cap the X axis at the N most-recent entities so
+            the heatmap stays readable. Default 30 fits a 1440-wide
+            laptop without scrolling.
+        weak_only: if True, restrict the result to (scorer, entity)
+            pairs that scored ≤ 3 — the team's "fix the failures first"
+            default.
+
+    Returns columns:
+        scorer_id, scorer_mean, entity_id, entity_short, entity_full,
+        entity_recency, grade, grade_label, scored_on.
+    """
+    cfg = ENTITIES[entity_key]
+    scorer_col = _scorer_col(entity_key)
+    name_table = cfg["name_table"]
+    fk = cfg["fk"]
+
+    # Window of recent entities (latest score date wins) — caps X axis.
+    # ROW_NUMBER + LATERAL would be cleaner but we want vanilla psql.
+    weak_filter = "AND s.grade <= 3" if weak_only else ""
+
+    sql = f"""
+        WITH recent_entities AS (
+            SELECT
+                n.id AS entity_id,
+                COALESCE(NULLIF(n.name, ''), n.id) AS entity_full,
+                MAX(s.scored_at)::date AS entity_recency
+            FROM {name_table} n
+            JOIN {cfg["score_table"]} s ON s.{fk} = n.id
+            WHERE s.scored_at >= NOW() - (:days || ' days')::interval
+              AND s.grade IS NOT NULL
+            GROUP BY n.id, n.name
+            ORDER BY entity_recency DESC
+            LIMIT :entity_limit
+        ),
+        latest_per_pair AS (
+            SELECT DISTINCT ON (s.{scorer_col}, s.{fk})
+                s.{scorer_col} AS scorer_id,
+                s.{fk} AS entity_id,
+                s.grade,
+                s.grade_label,
+                s.scored_at::date AS scored_on
+            FROM {cfg["score_table"]} s
+            JOIN recent_entities r ON r.entity_id = s.{fk}
+            WHERE s.scored_at >= NOW() - (:days || ' days')::interval
+              AND s.grade IS NOT NULL
+              {weak_filter}
+            ORDER BY s.{scorer_col}, s.{fk}, s.scored_at DESC
+        ),
+        scorer_means AS (
+            SELECT
+                {scorer_col} AS scorer_id,
+                ROUND(AVG(grade)::numeric, 2) AS scorer_mean
+            FROM {cfg["score_table"]}
+            WHERE scored_at >= NOW() - (:days || ' days')::interval
+              AND grade IS NOT NULL
+            GROUP BY {scorer_col}
+        )
+        SELECT
+            p.scorer_id,
+            m.scorer_mean,
+            p.entity_id,
+            r.entity_full,
+            r.entity_recency,
+            p.grade,
+            p.grade_label,
+            p.scored_on
+        FROM latest_per_pair p
+        JOIN recent_entities r ON r.entity_id = p.entity_id
+        LEFT JOIN scorer_means m ON m.scorer_id = p.scorer_id
+        ORDER BY m.scorer_mean ASC NULLS LAST, p.scorer_id, r.entity_recency DESC
+    """
+    return run_query(
+        sql,
+        {"days": days, "entity_limit": entity_limit},
+    )
+
+
 # ── Cross-cutting trend (for the Overview chart) ───────────────────
 
 def cross_entity_trend(days: int = 90, granularity: str = "week") -> pd.DataFrame:
