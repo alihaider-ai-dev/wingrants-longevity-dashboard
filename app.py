@@ -259,20 +259,32 @@ def _heatmap_view(entity_key: str, singular: str, plural: str) -> None:
 
     # Tooltip-friendly truncations — Altair renders one line per tooltip
     # field, so keep these short or the hover box turns into a wall.
-    def _shorten(s, limit=320):
-        if s is None or (isinstance(s, float) and pd.isna(s)):
-            return ""
-        s = str(s).strip().replace("\r\n", " ").replace("\n", " · ")
+    # We use a wider limit (480) for reasoning since that's the main
+    # signal the team is hovering for, and a tighter one for weakness.
+    def _shorten(s, limit=480):
+        if s is None:
+            return "—"
+        try:
+            if pd.isna(s):
+                return "—"
+        except (TypeError, ValueError):
+            pass
+        s = str(s).strip()
+        if not s or s.lower() in {"none", "n/a", "nan", "null"}:
+            return "—"
+        s = s.replace("\r\n", " ").replace("\n", " · ")
         return s if len(s) <= limit else s[: limit - 1] + "…"
 
     if "reasoning" in df.columns:
         df["reasoning_short"] = df["reasoning"].apply(_shorten)
+    else:
+        df["reasoning_short"] = "—"
     if "key_weakness" in df.columns:
         df["weakness_short"] = df["key_weakness"].apply(
-            lambda v: _shorten(v, limit=200)
-            if v and str(v).lower() not in {"none", "n/a", "nan", ""}
-            else ""
+            lambda v: _shorten(v, limit=240)
         )
+    else:
+        df["weakness_short"] = "—"
 
     # Headline metric strip — totals so the team sees pattern density.
     cols = st.columns(4)
@@ -281,9 +293,16 @@ def _heatmap_view(entity_key: str, singular: str, plural: str) -> None:
     cols[2].metric("Weak cells (≤ 3)", int((df["grade"] <= 3).sum()))
     cols[3].metric("Mean grade", f"{df['grade'].mean():.2f}")
 
-    height = min(960, max(360, 26 * df["scorer_id"].nunique() + 80))
+    # Give every scorer ~22 px of vertical space so labels render
+    # cleanly (no more 'every other label dropped' Altair behaviour).
+    # We don't cap height — the page just scrolls when there are a lot
+    # of scorers, which is the right trade-off given the team needs to
+    # see EVERY rubric, not a representative sample.
+    n_scorers = int(df["scorer_id"].nunique())
+    row_px = 22
+    height = max(360, row_px * n_scorers + 80)
     st.altair_chart(
-        render_heatmap(df, title_hint=singular, height=height),
+        render_heatmap(df, title_hint=singular, height=height, row_px=row_px),
         use_container_width=True,
     )
 

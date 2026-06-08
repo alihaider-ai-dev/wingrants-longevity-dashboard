@@ -44,6 +44,7 @@ def render_heatmap(
     *,
     title_hint: str = "entity",
     height: int = 720,
+    row_px: int = 22,
 ) -> alt.Chart:
     """Build the Altair heatmap from long-form data.
 
@@ -93,9 +94,15 @@ def render_heatmap(
             sort=scorer_order,
             title=None,
             axis=alt.Axis(
-                labelLimit=260,
-                labelFontSize=11,
+                labelLimit=300,
+                labelFontSize=10,
                 labelColor="#1A1530",
+                # Force every scorer label to render. Altair's default
+                # 'parity' strategy hides every other label when they
+                # would overlap — disastrous here because every row is
+                # a different rubric the team needs to identify.
+                labelOverlap=False,
+                labelPadding=4,
             ),
         ),
     )
