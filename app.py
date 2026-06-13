@@ -34,6 +34,7 @@ from src import auth, charts, filters, queries
 from src.heatmap import render_heatmap
 from src.quality import grade_with_label, quality_label
 from src.scorer_names import label_for
+from src.scorer_sections import SECTION_ORDER, section_for
 
 
 # ── Page config (must run before any other Streamlit call) ───────
@@ -247,14 +248,24 @@ def _heatmap_view(entity_key: str, singular: str, plural: str) -> None:
     # Shape the long-form data into the columns the renderer expects.
     df = df.copy()
     df["scorer_label"] = df["scorer_id"].map(label_for)
-    df["entity_short"] = df["entity_full"].astype(str).str.slice(0, 36)
-    # Disambiguate identical short titles (truncation can collide).
-    dup_mask = df["entity_short"].duplicated(keep=False)
-    if dup_mask.any():
-        df.loc[dup_mask, "entity_short"] = (
-            df.loc[dup_mask, "entity_short"] + " · " +
-            df.loc[dup_mask, "entity_id"].astype(str).str.slice(0, 6)
-        )
+    df["section"] = df["scorer_id"].map(section_for)
+
+    # X axis = the score DATE, not the proposal name — the team reads the
+    # grid chronologically (which week did scores soften?), and proposal
+    # titles are long + noisy. entity_recency is the latest score date for
+    # the entity; format it human-friendly. In the rare case two distinct
+    # entities share a date we append a short id tail so Altair keeps them
+    # in separate columns rather than collapsing them into one. The full
+    # proposal title still lives on the hover tooltip (entity_full).
+    df["entity_recency"] = pd.to_datetime(df["entity_recency"])
+    df["entity_date"] = df["entity_recency"].dt.strftime("%-d %b %Y")
+    entities_per_date = df.groupby("entity_date")["entity_id"].transform("nunique")
+    df["entity_short"] = df["entity_date"]
+    collide = entities_per_date > 1
+    df.loc[collide, "entity_short"] = (
+        df.loc[collide, "entity_date"] + " · " +
+        df.loc[collide, "entity_id"].astype(str).str.slice(0, 4)
+    )
     df["scored_on"] = df["scored_on"].astype(str)
     df["grade"] = df["grade"].astype(int)
 
@@ -299,13 +310,49 @@ def _heatmap_view(entity_key: str, singular: str, plural: str) -> None:
     # We don't cap height — the page just scrolls when there are a lot
     # of scorers, which is the right trade-off given the team needs to
     # see EVERY rubric, not a representative sample.
-    n_scorers = int(df["scorer_id"].nunique())
     row_px = 22
-    height = max(360, row_px * n_scorers + 80)
-    st.altair_chart(
-        render_heatmap(df, title_hint=singular, height=height, row_px=row_px),
-        use_container_width=True,
-    )
+
+    if entity_key == "ai_draft":
+        # Proposals are scored across the four EC evaluation sections.
+        # 365 evaluators in one grid is unreadable, so we split into one
+        # heatmap per section (Excellence · Impact · Implementation ·
+        # Compliance) — each its own scorer × date grid.
+        st.caption(
+            "Proposal scorers are split into the four EC evaluation "
+            "sections. Each grid below is the same scorer × date "
+            "heatmap, scoped to one section."
+        )
+        rendered_any = False
+        for section in SECTION_ORDER:
+            sec_df = df[df["section"] == section]
+            if sec_df.empty:
+                continue
+            rendered_any = True
+            sec_scorers = int(sec_df["scorer_id"].nunique())
+            weak_cells = int((sec_df["grade"] <= 3).sum())
+            sec_height = max(240, row_px * sec_scorers + 80)
+            st.markdown(
+                f"##### {section}  ·  {sec_scorers} scorers  ·  "
+                f"{weak_cells} weak cells (≤ 3)"
+            )
+            st.altair_chart(
+                render_heatmap(
+                    sec_df,
+                    title_hint=singular,
+                    height=sec_height,
+                    row_px=row_px,
+                ),
+                use_container_width=True,
+            )
+        if not rendered_any:
+            st.info("No section scorers matched the current filters.")
+    else:
+        n_scorers = int(df["scorer_id"].nunique())
+        height = max(360, row_px * n_scorers + 80)
+        st.altair_chart(
+            render_heatmap(df, title_hint=singular, height=height, row_px=row_px),
+            use_container_width=True,
+        )
 
     # Top weak rows — flat table mode for when the user wants to
     # actually copy a row out (or scan a long tail).
@@ -383,7 +430,10 @@ def _by_entity(entity_key: str, singular: str, plural: str) -> None:
     if bands:
         detail = detail[detail["grade"].isin(bands)]
 
-    for _, r in detail.iterrows():
+    detail = detail.copy()
+    detail["section"] = detail["scorer_id"].map(section_for)
+
+    def _scorer_expander(r) -> None:
         scorer_label = label_for(r["scorer_id"])
         pill = _grade_pill(r["grade"], r["grade_label"])
         with st.expander(scorer_label, expanded=False):
@@ -400,6 +450,23 @@ def _by_entity(entity_key: str, singular: str, plural: str) -> None:
                 f"`{r['model'] or 'unknown'}`  ·  Scored on {r['scored_on']}"
             )
 
+    if entity_key == "ai_draft":
+        # Group the scorers under their EC evaluation section so the
+        # team reads the proposal section-by-section, same as the EC.
+        for section in SECTION_ORDER:
+            sec = detail[detail["section"] == section]
+            if sec.empty:
+                continue
+            st.markdown(
+                f"##### {section}  ·  {len(sec)} scorers  ·  "
+                f"mean {sec['grade'].mean():.2f}"
+            )
+            for _, r in sec.iterrows():
+                _scorer_expander(r)
+    else:
+        for _, r in detail.iterrows():
+            _scorer_expander(r)
+
 
 def _by_scorer(entity_key: str, singular: str, plural: str) -> None:
     """Pick one scorer → see every entity of THIS feature it scored,
@@ -408,6 +475,27 @@ def _by_scorer(entity_key: str, singular: str, plural: str) -> None:
     if listing.empty:
         st.info(f"No scorer activity for {plural} in the selected window.")
         return
+
+    listing = listing.copy()
+    # Proposals carry 365 evaluators across the four EC sections — let the
+    # team narrow the picker to one section instead of scrolling the lot.
+    if entity_key == "ai_draft":
+        listing["section"] = listing["scorer_id"].map(section_for)
+        section_pick = st.radio(
+            "Section",
+            options=["All", *SECTION_ORDER],
+            horizontal=True,
+            key=f"section_pick_{entity_key}",
+            help="Narrow the scorer list to one EC evaluation section.",
+        )
+        if section_pick != "All":
+            listing = listing[listing["section"] == section_pick]
+        if listing.empty:
+            st.info(
+                f"No {section_pick} scorers ran on {plural} in the "
+                f"selected window."
+            )
+            return
 
     options = {
         row["scorer_id"]: (
