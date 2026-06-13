@@ -67,6 +67,21 @@ ENTITIES = {
         # generic queries below normalise this difference.
         "scorer_col": "evaluator_id",
     },
+    "external_proposal": {
+        # Externally-uploaded proposals run through the AI Scorecard
+        # (the standalone "evaluate my proposal" / independent-evaluation
+        # flow). Same 8-family evaluators as AI drafts, scored into the
+        # parallel proposal_eval_* tables instead of proposal_*.
+        "label": "External proposals",
+        "singular": "external proposal",
+        "scorer_prefix": "CO/CV/EX/GK/IM/IP/PSC/PSG",
+        "name_table": "proposal_evals",
+        "score_table": "proposal_eval_scores",
+        "summary_table": "proposal_eval_summaries",
+        "fk": "eval_id",
+        "id_label": "eval_id",
+        "scorer_col": "evaluator_id",
+    },
 }
 
 
@@ -543,7 +558,7 @@ def heatmap_grid(
 # Cloud sometimes hot-reloads app.py without re-importing dependent
 # `src.*` modules; bumping a comment in this file invalidates the .pyc
 # and forces a clean import on the next build.)
-_QUERY_MODULE_REV = "2026-06-08-r2"
+_QUERY_MODULE_REV = "2026-06-13-r3"
 
 
 def user_activity(days: int = 7, trial_only: bool = False) -> pd.DataFrame:

@@ -32,11 +32,13 @@ MINT = "#3C7A3A"
 LILAC = "#6D5CB9"
 
 # Distinct colour per entity, used by the Overview cross-entity trend.
+# Keys MUST match the `label` values in queries.ENTITIES so the colour
+# scale domain lines up with the data (and the legend reads correctly).
 ENTITY_COLOURS = {
     "Research notes": ACCENT_DEEP,
     "Strategy notes": LILAC,
-    "AI drafts (proposals)": MINT,
-    "Standalone scorecards": "#8F6718",  # sun-deep
+    "AI drafts": MINT,
+    "External proposals": "#8F6718",  # sun-deep
 }
 
 

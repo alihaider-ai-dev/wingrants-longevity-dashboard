@@ -36,6 +36,11 @@ from src.quality import grade_with_label, quality_label
 from src.scorer_names import label_for
 from src.scorer_sections import SECTION_ORDER, section_for
 
+# Entities whose scorers fold into the four EC evaluation sections —
+# both proposal surfaces share the CO/CV/EX/GK/IM/IP/PSC/PSG evaluator
+# families, so both get the per-section heatmap / picker treatment.
+_SECTIONED = {"ai_draft", "external_proposal"}
+
 
 # ── Page config (must run before any other Streamlit call) ───────
 st.set_page_config(
@@ -79,6 +84,7 @@ tabs = st.tabs(
         "Research Notes",
         "Strategy Notes",
         "AI Drafts",
+        "External proposals",
         "Activity",
     ]
 )
@@ -312,7 +318,7 @@ def _heatmap_view(entity_key: str, singular: str, plural: str) -> None:
     # see EVERY rubric, not a representative sample.
     row_px = 22
 
-    if entity_key == "ai_draft":
+    if entity_key in _SECTIONED:
         # Proposals are scored across the four EC evaluation sections.
         # 365 evaluators in one grid is unreadable, so we split into one
         # heatmap per section (Excellence · Impact · Implementation ·
@@ -450,7 +456,7 @@ def _by_entity(entity_key: str, singular: str, plural: str) -> None:
                 f"`{r['model'] or 'unknown'}`  ·  Scored on {r['scored_on']}"
             )
 
-    if entity_key == "ai_draft":
+    if entity_key in _SECTIONED:
         # Group the scorers under their EC evaluation section so the
         # team reads the proposal section-by-section, same as the EC.
         for section in SECTION_ORDER:
@@ -479,7 +485,7 @@ def _by_scorer(entity_key: str, singular: str, plural: str) -> None:
     listing = listing.copy()
     # Proposals carry 365 evaluators across the four EC sections — let the
     # team narrow the picker to one section instead of scrolling the lot.
-    if entity_key == "ai_draft":
+    if entity_key in _SECTIONED:
         listing["section"] = listing["scorer_id"].map(section_for)
         section_pick = st.radio(
             "Section",
@@ -572,16 +578,12 @@ with tabs[0]:
     if metrics.empty:
         st.info("No scoring activity in the selected window.")
     else:
-        cols = st.columns(4)
+        cols = st.columns(3)
         cols[0].metric("Total entities scored", int(metrics["entities_scored"].sum()))
         cols[1].metric("Total scores", int(metrics["scores"].sum()))
         cols[2].metric(
             "Mean grade (all surfaces)",
             f"{metrics['avg_grade'].mean():.2f}" if not metrics["avg_grade"].dropna().empty else "—",
-        )
-        cols[3].metric(
-            "Approx cost (USD)",
-            f"${metrics['approx_cost_usd'].sum():.2f}",
         )
 
         cross_df = queries.cross_entity_trend(days=f.days, granularity=f.granularity)
@@ -625,7 +627,15 @@ with tabs[3]:
     _entity_tab("ai_draft", "AI drafts")
 
 
-# ── Tab 4 — Trials ────────────────────────────────────────────────
+# ── Tab 4 — External proposals ────────────────────────────────────
+# Externally-uploaded proposals scored by the AI Scorecard (the
+# independent-evaluation flow). Same three modes + the four-section
+# split as AI drafts — they share the proposal evaluator families.
+with tabs[4]:
+    _entity_tab("external_proposal", "External proposals")
+
+
+# ── Tab 5 — Activity / Trials ─────────────────────────────────────
 
 
 _FUNNEL_STAGES = [
@@ -695,7 +705,7 @@ def _surface_pill(surface: str) -> str:
     )
 
 
-with tabs[4]:
+with tabs[5]:
     st.markdown("### Cross-surface activity")
     st.caption(
         "Every user action across the platform, newest-first — trials, paid "
@@ -721,10 +731,40 @@ with tabs[4]:
         )
 
     activity = queries.user_activity(days=f.days, trial_only=trial_only)
-    if activity.empty:
-        st.info("No activity in the selected window.")
-    elif surfaces_filter and not all(s in surfaces_filter for s in _SURFACE_LABELS.keys()):
+
+    # ── Exclude internal / test accounts ─────────────────────────
+    # aj@aidevstudio.ai is the team's own testing account, so it's
+    # excluded by default — clear the chip to see everything. The
+    # exclusion also applies to the Trial funnel further down.
+    if not activity.empty:
+        present = {
+            str(e).strip()
+            for e in activity["user_email"].dropna().unique()
+            if str(e).strip()
+        }
+    else:
+        present = set()
+    email_pool = sorted(present | {"aj@aidevstudio.ai"})
+    excluded_emails = st.multiselect(
+        "Exclude users (by email)",
+        options=email_pool,
+        default=[e for e in ["aj@aidevstudio.ai"] if e in email_pool],
+        help="Hide these users' rows from the activity feed AND the trial "
+             "funnel below. aj@aidevstudio.ai (internal testing) is excluded "
+             "by default.",
+        key="activity_exclude_emails",
+    )
+
+    # Apply surface + email filters.
+    if not activity.empty and surfaces_filter and not all(
+        s in surfaces_filter for s in _SURFACE_LABELS.keys()
+    ):
         activity = activity[activity["surface"].isin(surfaces_filter)]
+    if not activity.empty and excluded_emails:
+        activity = activity[~activity["user_email"].isin(excluded_emails)]
+
+    if activity.empty:
+        st.info("No activity in the selected window (after filters).")
 
     if not activity.empty:
         # ── Surface × Stage matrix at the top ────────────────────
@@ -804,6 +844,8 @@ with tabs[4]:
     )
 
     trials = queries.trial_funnel(days=f.days)
+    if not trials.empty and excluded_emails:
+        trials = trials[~trials["user_email"].isin(excluded_emails)]
     if trials.empty:
         st.info("No trials kicked off in the selected window.")
     else:

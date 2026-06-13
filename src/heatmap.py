@@ -71,8 +71,11 @@ def render_heatmap(
         .drop_duplicates()
         .tolist()
     )
+    # X axis reads chronologically left→right (oldest score date first,
+    # newest last). The N-most-recent cap still happens upstream in the
+    # query; this only governs display order.
     entity_order = (
-        df.sort_values("entity_recency", ascending=False)["entity_short"]
+        df.sort_values("entity_recency", ascending=True)["entity_short"]
         .drop_duplicates()
         .tolist()
     )
