@@ -558,7 +558,7 @@ def heatmap_grid(
 # Cloud sometimes hot-reloads app.py without re-importing dependent
 # `src.*` modules; bumping a comment in this file invalidates the .pyc
 # and forces a clean import on the next build.)
-_QUERY_MODULE_REV = "2026-06-13-r3"
+_QUERY_MODULE_REV = "2026-06-30-r4"
 
 
 def user_activity(days: int = 7, trial_only: bool = False) -> pd.DataFrame:
