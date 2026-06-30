@@ -10,3 +10,14 @@ boto3==1.35.81
 python-dotenv==1.1.1
 sqlalchemy==2.0.36          # pandas.read_sql convenience layer
 anthropic==0.42.0           # Claude API for the AI chart generator
+
+# ── Deploy cache-buster ───────────────────────────────────────────
+# Streamlit Cloud only hot-reloads app.py on a git push; it keeps the
+# previously-imported src.* modules in memory, so a NEW function added
+# to src/queries.py (e.g. scored_proposal_list for the Proposal
+# deep-dive tab) is missing from the stale module and the app raises
+# AttributeError. Editing requirements.txt changes the dependency hash,
+# which forces Streamlit Cloud to rebuild the environment and start a
+# fresh Python process — re-importing every module cleanly. Bump the
+# date below whenever a deploy needs a guaranteed full restart.
+# full-restart marker: 2026-06-30-r1
