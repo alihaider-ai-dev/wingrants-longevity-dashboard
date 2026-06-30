@@ -30,7 +30,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from src import auth, charts, filters, queries
+from src import auth, charts, filters, proposal_detail, queries
 from src.heatmap import render_heatmap
 from src.quality import grade_with_label, quality_label
 from src.scorer_names import label_for
@@ -85,6 +85,7 @@ tabs = st.tabs(
         "Strategy Notes",
         "AI Drafts",
         "External proposals",
+        "Proposal deep-dive",
         "Activity",
     ]
 )
@@ -635,7 +636,15 @@ with tabs[4]:
     _entity_tab("external_proposal", "External proposals")
 
 
-# ── Tab 5 — Activity / Trials ─────────────────────────────────────
+# ── Tab 5 — Proposal deep-dive ────────────────────────────────────
+# Pick one AI-draft proposal → walk every EC division, its redraft
+# trajectory, and every scorer's final grade + justification. Lives in
+# its own module so this entry file stays thin.
+with tabs[5]:
+    proposal_detail.render(f)
+
+
+# ── Tab 6 — Activity / Trials ─────────────────────────────────────
 
 
 _FUNNEL_STAGES = [
@@ -705,7 +714,7 @@ def _surface_pill(surface: str) -> str:
     )
 
 
-with tabs[5]:
+with tabs[6]:
     st.markdown("### Cross-surface activity")
     st.caption(
         "Every user action across the platform, newest-first — trials, paid "

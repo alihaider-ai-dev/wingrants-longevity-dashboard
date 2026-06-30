@@ -860,3 +860,117 @@ def cross_entity_trend(days: int = 90, granularity: str = "week") -> pd.DataFram
         )
     sql = "UNION ALL".join(pieces) + " ORDER BY entity, bucket"
     return run_query(sql, {"granularity": granularity, "days": days})
+
+
+# ── Proposal deep-dive (proposal → division → scorer) ───────────────
+#
+# These power the "Proposal deep-dive" tab. Unlike the generic entity
+# tabs, this is scoped to AI-draft proposals (the only surface that
+# carries section_id divisions + the section-redraft loop), so the SQL
+# is hand-written against `proposals` / `proposal_scores` rather than
+# the parameterised ENTITIES builders.
+
+
+def scored_proposal_list(days: int = 365) -> pd.DataFrame:
+    """One row per AI-draft proposal that has at least one score in the
+    window, newest-first. Powers the deep-dive proposal picker.
+
+    `has_trajectory` flags whether the proposal carries per-redraft
+    history in `section_versions` — the picker badges this so the team
+    knows which proposals show the trajectory view vs. final-only.
+    """
+    sql = """
+        SELECT
+            p.id,
+            COALESCE(NULLIF(p.name, ''), p.id) AS title,
+            u.email AS owner,
+            ROUND(AVG(s.grade)::numeric, 2) AS avg_grade,
+            COUNT(DISTINCT s.section_id) AS divisions,
+            COUNT(DISTINCT s.evaluator_id) AS scorers,
+            COUNT(*) AS scores,
+            MAX(s.revision_count) AS max_redraft,
+            (p.section_versions IS NOT NULL
+                AND p.section_versions::text NOT IN ('', '{}', 'null')) AS has_trajectory,
+            p.status,
+            MAX(s.scored_at)::date AS last_scored_on
+        FROM proposals p
+        JOIN proposal_scores s ON s.proposal_id = p.id
+        LEFT JOIN users u ON u.id = p.user_id
+        WHERE s.grade IS NOT NULL
+          AND s.scored_at >= NOW() - (:days || ' days')::interval
+        GROUP BY p.id, u.email
+        ORDER BY last_scored_on DESC, p.id
+    """
+    return run_query(sql, {"days": days})
+
+
+def proposal_division_summary(proposal_id: str) -> pd.DataFrame:
+    """Per-division rollup for ONE proposal — one row per section_id with
+    its scorer count, mean grade, weak-cell count and max redraft. Powers
+    the division picker labels."""
+    sql = """
+        SELECT
+            s.section_id,
+            COUNT(DISTINCT s.evaluator_id) AS scorers,
+            ROUND(AVG(s.grade)::numeric, 2) AS avg_grade,
+            SUM(CASE WHEN s.grade <= 3 THEN 1 ELSE 0 END) AS weak,
+            SUM(CASE WHEN s.is_veto AND s.grade <= 2 THEN 1 ELSE 0 END) AS vetoes,
+            MAX(s.revision_count) AS max_redraft
+        FROM proposal_scores s
+        WHERE s.proposal_id = :pid
+          AND s.grade IS NOT NULL
+        GROUP BY s.section_id
+    """
+    return run_query(sql, {"pid": proposal_id})
+
+
+def proposal_division_scores(proposal_id: str, section_id: str) -> pd.DataFrame:
+    """Every scorer's FINAL grade + justification for one division of one
+    proposal, weakest-grade first (the team fixes failures first)."""
+    sql = """
+        SELECT
+            s.evaluator_id AS scorer_id,
+            s.evaluator_name,
+            s.evaluator_category,
+            s.grade,
+            s.grade_label,
+            s.reasoning,
+            s.key_weakness,
+            s.is_veto,
+            s.model,
+            s.revision_count,
+            s.scored_at::date AS scored_on
+        FROM proposal_scores s
+        WHERE s.proposal_id = :pid
+          AND s.section_id = :sid
+          AND s.grade IS NOT NULL
+        ORDER BY s.grade ASC, s.evaluator_id
+    """
+    return run_query(sql, {"pid": proposal_id, "sid": section_id})
+
+
+def proposal_section_versions(proposal_id: str) -> dict:
+    """Return the parsed `section_versions` jsonb for one proposal — a
+    {section_id: {best_score, score_history, change_history,
+    revision_count}} map describing the per-division redraft trajectory.
+
+    Returns an empty dict when the proposal has no stored trajectory.
+    psycopg2 hands jsonb back as a dict already, but we defensively parse
+    a string in case the driver/type-coercion path changes.
+    """
+    df = run_query(
+        "SELECT section_versions FROM proposals WHERE id = :pid",
+        {"pid": proposal_id},
+    )
+    if df.empty:
+        return {}
+    raw = df.iloc[0]["section_versions"]
+    if raw is None:
+        return {}
+    if isinstance(raw, str):
+        import json
+        try:
+            raw = json.loads(raw or "{}")
+        except (ValueError, TypeError):
+            return {}
+    return raw if isinstance(raw, dict) else {}
