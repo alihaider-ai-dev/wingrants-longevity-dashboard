@@ -56,6 +56,14 @@ def _clean(text, limit: int | None = None) -> str:
     return s
 
 
+# Grade 0 is a sentinel ("Not assessed" / "Not addressed / cannot be
+# assessed"), NOT a quality score — the criterion is absent or out of
+# scope. Render it as a neutral N/A, never as a red zero.
+_NA_BG = "#EDE7DD"
+_NA_FG = "#9A93A6"
+_NA_TIP = "Not assessed — criterion absent or out of scope (not a 0 score)"
+
+
 def _hex_to_rgba(hex_color: str, alpha: float) -> str:
     h = hex_color.lstrip("#")
     r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
@@ -125,17 +133,28 @@ def _one_table(proposal_id: str, summary: pd.DataFrame, sv: dict, modes_by_sec: 
                     tds.append("<td class='na'></td>")
                 elif scid in fmap.get(r, {}):
                     g = int(fmap[r][scid].get("grade"))
-                    bg, fg = quality_color(g)
-                    rlabel = "Initial evaluation" if r == 0 else f"Rev {r} ({modes.get(r, '—')}) — re-evaluated"
-                    tip = _attr(f"{rlabel}, failing · grade {g}")
-                    tds.append(f"<td class='sc' style='background:{bg};color:{fg};font-weight:700' "
-                               f"title=\"{tip}\">{g}</td>")
+                    if g == 0:
+                        tds.append(f"<td class='sc' style='background:{_NA_BG};color:{_NA_FG}' "
+                                   f"title=\"{_NA_TIP}\">N/A</td>")
+                    else:
+                        bg, fg = quality_color(g)
+                        rlabel = "Initial evaluation" if r == 0 else f"Rev {r} ({modes.get(r, '—')}) — re-evaluated"
+                        tip = _attr(f"{rlabel}, failing · grade {g}")
+                        tds.append(f"<td class='sc' style='background:{bg};color:{fg};font-weight:700' "
+                                   f"title=\"{tip}\">{g}</td>")
+                elif final == 0:
+                    tds.append(f"<td class='sc' style='background:{_NA_BG};color:{_NA_FG}' "
+                               f"title=\"{_NA_TIP}\">N/A</td>")
                 else:
                     bg = _hex_to_rgba(quality_color(final)[0], 0.30)
                     tds.append(f"<td class='sc' style='background:{bg};color:#8A8398' "
                                f"title='carried forward — passed earlier, not re-evaluated'>{final}·</td>")
-            fbg, ffg = quality_color(final)
-            tds.append(f"<td class='sc fin' style='background:{fbg};color:{ffg};font-weight:700'>{final}</td>")
+            if final == 0:
+                tds.append(f"<td class='sc fin' style='background:{_NA_BG};color:{_NA_FG}' "
+                           f"title=\"{_NA_TIP}\">N/A</td>")
+            else:
+                fbg, ffg = quality_color(final)
+                tds.append(f"<td class='sc fin' style='background:{fbg};color:{ffg};font-weight:700'>{final}</td>")
             body.append(f"<tr>{''.join(tds)}</tr>")
 
             # ── Justification row ──
@@ -184,8 +203,9 @@ def _one_table(proposal_id: str, summary: pd.DataFrame, sv: dict, modes_by_sec: 
         "redraft revision, then **Final** (accepted). Each scorer = two rows: **score** on "
         "top, **justification** beneath. Bold cell = re-evaluated & failing that revision · "
         "faded `n·` = carried forward (passed, not re-evaluated) · grey = section had fewer "
-        "revisions. Colours: 1 BAD · 2 POOR · 3 FAIR · 4 GOOD · 5 EXCELLENT. Hover any cell "
-        "for full text."
+        "revisions. Colours: 1 BAD · 2 POOR · 3 FAIR · 4 GOOD · 5 EXCELLENT. "
+        "**N/A** = not assessed (criterion absent or out of scope — not a 0 score). "
+        "Hover any cell for full text."
     )
 
 
