@@ -1,25 +1,24 @@
 """
-Proposal deep-dive tab — ONE consolidated scorer × revision table.
+Proposal deep-dive tab — Revision Scoring Matrix.
 
-Layout (a single table for the whole proposal):
-  - Column 1  : Section  — merged (rowspan) down all its scorers.
-  - Column 2  : Scorer   — merged (rowspan 2) across its two rows.
-  - Columns 3+: Revision 1 … last redraft pass, then a Final column.
-  - Each scorer occupies TWO rows:
-        top row    = the grade at each revision
-        bottom row = the justification / reason at each revision
+A pivot/matrix per proposal (PRD: "Revision Scoring Matrix for Proposal
+Evaluation"):
+  - rows    = scorers / criteria, grouped under their proposal section
+              (section is a merged rowspan cell)
+  - columns = Initial · Rev 1 … Rev N · Final, in chronological order
+  - cell    = score (top row of each scorer) + justification (bottom row)
+  - colour  = 1 BAD → 5 EXCELLENT; N/A = not assessed (grade-0 sentinel)
+  - delta   = ▲ / ▼ next to a score when it rose / fell vs the previous
+              revision, so improvement/regression scans at a glance
+  - revision type (full / surgical / …) shows in the column header when a
+    single section is selected (it varies per section, so it can't be one
+    global header in the all-sections view).
 
-How the engine scores (what the cells encode):
-  - Only FAILING scorers are re-evaluated each revision; a scorer that
-    already passed isn't re-scored — its grade carries forward (sticky).
-  - So a grade cell is one of:
-        • bold, full colour  → re-evaluated and failing that revision
-          (grade from `section_versions.change_history`; the bottom cell
-          shows that revision's key weakness), OR
-        • faded `n·`         → carried forward (passed, not re-evaluated),
-        • blank grey         → the section had fewer revisions than this.
-  - The Final column is the accepted grade; its justification cell holds
-    the full reasoning (only the accepted revision keeps full text).
+Engine model the cells encode: only FAILING scorers are re-evaluated each
+revision; a passing scorer carries its grade forward (sticky). Bold cell
+= re-evaluated & failing; faded `n·` = carried forward. Full per-revision
+reasoning isn't stored — failing cells carry the key weakness, the Final
+column carries the full reasoning.
 """
 from __future__ import annotations
 
@@ -31,6 +30,23 @@ from src.charts import RULE
 from src.proposal_sections import division_label, division_sort_key
 from src.quality import quality_color
 from src.scorer_names import label_for
+
+# Redraft-type labels parsed from section.redraft events.
+_TYPE_ABBR = {
+    "full": "Full",
+    "targeted": "Surgical",
+    "targeted_compress": "Surgical+",
+    "page_only": "Page-fit",
+}
+
+# Grade 0 is a sentinel ("Not assessed" / "Not addressed / cannot be
+# assessed") — the criterion is absent or out of scope, NOT a 0 score.
+_NA_BG = "#EDE7DD"
+_NA_FG = "#9A93A6"
+_NA_TIP = "Not assessed — criterion absent or out of scope (not a 0 score)"
+
+_UP = "<sup style='color:#2E7D32;font-size:8px;'>▲</sup>"
+_DOWN = "<sup style='color:#C62828;font-size:8px;'>▼</sup>"
 
 
 def _attr(s) -> str:
@@ -56,29 +72,25 @@ def _clean(text, limit: int | None = None) -> str:
     return s
 
 
-# Grade 0 is a sentinel ("Not assessed" / "Not addressed / cannot be
-# assessed"), NOT a quality score — the criterion is absent or out of
-# scope. Render it as a neutral N/A, never as a red zero.
-_NA_BG = "#EDE7DD"
-_NA_FG = "#9A93A6"
-_NA_TIP = "Not assessed — criterion absent or out of scope (not a 0 score)"
-
-
 def _hex_to_rgba(hex_color: str, alpha: float) -> str:
     h = hex_color.lstrip("#")
     r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
     return f"rgba({r},{g},{b},{alpha})"
 
 
-def _failing_map(change_history: list) -> dict:
-    """{revision_int: {scorer_id: failing_obj}}.
+def _delta(cur, prev) -> str:
+    if prev is None or cur is None:
+        return ""
+    if cur > prev:
+        return _UP
+    if cur < prev:
+        return _DOWN
+    return ""
 
-    `change_history` keys revisions by their integer count (0 = the
-    initial evaluation, before any redraft). When the engine collapses
-    the earliest passes it stores them under the non-int key 'earlier' —
-    we fold that onto revision 0 (the initial column) so the initial
-    evaluation is always represented.
-    """
+
+def _failing_map(change_history: list) -> dict:
+    """{revision_int: {scorer_id: failing_obj}}; folds the collapsed
+    'earlier' summary onto revision 0 (the initial evaluation)."""
     out: dict = {}
     for ch in change_history:
         rev = ch.get("revision")
@@ -89,11 +101,10 @@ def _failing_map(change_history: list) -> dict:
     return out
 
 
-# ── The one consolidated table ──────────────────────────────────────
+# ── The Revision Scoring Matrix ─────────────────────────────────────
 
 
-def _one_table(proposal_id: str, summary: pd.DataFrame, sv: dict, modes_by_sec: dict) -> None:
-    # Gather each section's scorers + failing history + revision ceiling.
+def _matrix(proposal_id: str, summary: pd.DataFrame, sv: dict, modes_by_sec: dict) -> None:
     sections, global_max = [], 0
     for _, srow in summary.iterrows():
         sid = srow["section_id"]
@@ -103,11 +114,20 @@ def _one_table(proposal_id: str, summary: pd.DataFrame, sv: dict, modes_by_sec: 
         global_max = max(global_max, sec_max)
         sections.append((sid, detail, _failing_map(ch), sec_max))
 
-    # Revision 0 = the initial evaluation, before any redrafting.
-    rev_cols = list(range(0, global_max + 1))
+    single = len(sections) == 1
+    max_col = sections[0][3] if single else global_max
+    rev_cols = list(range(0, max_col + 1))
 
-    heads = ["<th class='sec'>Section</th>", "<th class='scr'>Scorer</th>"]
-    heads += [f"<th>{'Initial' if r == 0 else f'Rev {r}'}</th>" for r in rev_cols]
+    # Header — revision type badge per column only in single-section view.
+    heads = ["<th class='sec'>Section</th>", "<th class='scr'>Scorer / criterion</th>"]
+    for r in rev_cols:
+        label = "Initial" if r == 0 else f"Rev {r}"
+        if single:
+            mode = modes_by_sec.get(sections[0][0], {}).get(r)
+            badge = "draft" if r == 0 else _TYPE_ABBR.get(mode, mode or "—")
+            heads.append(f"<th>{label}<br><span class='t'>{_attr(badge)}</span></th>")
+        else:
+            heads.append(f"<th>{label}</th>")
     heads.append("<th class='fin'>Final</th>")
 
     body = []
@@ -122,39 +142,42 @@ def _one_table(proposal_id: str, summary: pd.DataFrame, sv: dict, modes_by_sec: 
             scid = sr["scorer_id"]
             final = int(sr["grade"])
 
-            # ── Score row ──
+            # ── Score row (with delta arrows) ──
             tds = []
             if idx == 0:
                 tds.append(f"<td class='sec' rowspan='{sec_span}'>{sec_label}</td>")
             tds.append(f"<td class='scr' rowspan='2' title=\"{_attr(label_for(scid))}\">"
                        f"{_attr(label_for(scid))}</td>")
+            prev = None
             for r in rev_cols:
                 if r > sec_max:
                     tds.append("<td class='na'></td>")
-                elif scid in fmap.get(r, {}):
-                    g = int(fmap[r][scid].get("grade"))
-                    if g == 0:
-                        tds.append(f"<td class='sc' style='background:{_NA_BG};color:{_NA_FG}' "
-                                   f"title=\"{_NA_TIP}\">N/A</td>")
-                    else:
-                        bg, fg = quality_color(g)
-                        rlabel = "Initial evaluation" if r == 0 else f"Rev {r} ({modes.get(r, '—')}) — re-evaluated"
-                        tip = _attr(f"{rlabel}, failing · grade {g}")
-                        tds.append(f"<td class='sc' style='background:{bg};color:{fg};font-weight:700' "
-                                   f"title=\"{tip}\">{g}</td>")
-                elif final == 0:
+                    continue
+                failing = scid in fmap.get(r, {})
+                g = int(fmap[r][scid].get("grade")) if failing else final
+                if g == 0:
                     tds.append(f"<td class='sc' style='background:{_NA_BG};color:{_NA_FG}' "
                                f"title=\"{_NA_TIP}\">N/A</td>")
+                    continue
+                arrow = _delta(g, prev)
+                prev = g
+                if failing:
+                    bg, fg = quality_color(g)
+                    rl = "Initial evaluation" if r == 0 else f"Rev {r} ({modes.get(r, '—')}) — re-evaluated"
+                    tds.append(f"<td class='sc' style='background:{bg};color:{fg};font-weight:700' "
+                               f"title=\"{_attr(rl + f', failing · grade {g}')}\">{g}{arrow}</td>")
                 else:
-                    bg = _hex_to_rgba(quality_color(final)[0], 0.30)
+                    bg = _hex_to_rgba(quality_color(g)[0], 0.30)
                     tds.append(f"<td class='sc' style='background:{bg};color:#8A8398' "
-                               f"title='carried forward — passed earlier, not re-evaluated'>{final}·</td>")
+                               f"title='carried forward — passed earlier, not re-evaluated'>{g}·{arrow}</td>")
             if final == 0:
                 tds.append(f"<td class='sc fin' style='background:{_NA_BG};color:{_NA_FG}' "
                            f"title=\"{_NA_TIP}\">N/A</td>")
             else:
+                arrow = _delta(final, prev)
                 fbg, ffg = quality_color(final)
-                tds.append(f"<td class='sc fin' style='background:{fbg};color:{ffg};font-weight:700'>{final}</td>")
+                tds.append(f"<td class='sc fin' style='background:{fbg};color:{ffg};font-weight:700'>"
+                           f"{final}{arrow}</td>")
             body.append(f"<tr>{''.join(tds)}</tr>")
 
             # ── Justification row ──
@@ -173,11 +196,12 @@ def _one_table(proposal_id: str, summary: pd.DataFrame, sv: dict, modes_by_sec: 
 
     html = f"""
     <style>
-      .onewrap {{ overflow:auto; max-height:640px; border:1px solid {RULE}; border-radius:8px; }}
+      .onewrap {{ overflow:auto; max-height:660px; border:1px solid {RULE}; border-radius:8px; }}
       table.one {{ border-collapse:collapse; font-size:11px; }}
       table.one th, table.one td {{ border:1px solid {RULE}; padding:3px 6px; vertical-align:top; }}
       table.one th {{ position:sticky; top:0; z-index:4; background:#F4EEE7; color:#1A1530;
                       font-weight:600; text-align:center; white-space:nowrap; }}
+      table.one th .t {{ font-weight:400; color:#6D6682; font-size:9px; }}
       table.one td.sec {{ position:sticky; left:0; z-index:2; background:#F1E9DD; font-weight:700;
                           writing-mode:vertical-rl; transform:rotate(180deg); text-align:center;
                           white-space:nowrap; max-width:30px; color:#1A1530; }}
@@ -199,13 +223,13 @@ def _one_table(proposal_id: str, summary: pd.DataFrame, sv: dict, modes_by_sec: 
     """
     st.markdown(html, unsafe_allow_html=True)
     st.caption(
-        "**Initial** = the first evaluation, before any redrafting; then one column per "
-        "redraft revision, then **Final** (accepted). Each scorer = two rows: **score** on "
-        "top, **justification** beneath. Bold cell = re-evaluated & failing that revision · "
-        "faded `n·` = carried forward (passed, not re-evaluated) · grey = section had fewer "
-        "revisions. Colours: 1 BAD · 2 POOR · 3 FAIR · 4 GOOD · 5 EXCELLENT. "
-        "**N/A** = not assessed (criterion absent or out of scope — not a 0 score). "
-        "Hover any cell for full text."
+        "**Columns:** Initial (before redrafting) · each redraft revision · Final (accepted). "
+        "**Each scorer = two rows:** score on top, justification beneath. "
+        "**Cells:** bold = re-evaluated & failing · faded `n·` = carried forward (passed, not "
+        "re-evaluated) · grey = section had fewer revisions · **N/A** = not assessed (criterion "
+        "absent/out of scope). **▲ / ▼** = score rose / fell vs the previous revision. "
+        "Colours 1 BAD · 2 POOR · 3 FAIR · 4 GOOD · 5 EXCELLENT. Hover any cell for full text. "
+        "Pick a single section above to see the **revision type** (Full / Surgical / …) in each header."
     )
 
 
@@ -213,10 +237,10 @@ def _one_table(proposal_id: str, summary: pd.DataFrame, sv: dict, modes_by_sec: 
 
 
 def render(f) -> None:
-    st.markdown("### Proposal deep-dive")
+    st.markdown("### Proposal deep-dive — revision scoring matrix")
     st.caption(
-        "One table per proposal: section → scorer → score (top row) and "
-        "justification (bottom row) across every revision."
+        "Compare scores across revisions: rows = scorers/criteria grouped by "
+        "section, columns = revisions, each cell = score + justification."
     )
 
     listing = queries.scored_proposal_list(days=f.days)
@@ -234,13 +258,6 @@ def render(f) -> None:
     cols[1].metric("Sections", int(meta["divisions"]))
     cols[2].metric("Scorers", int(meta["scorers"]))
 
-    st.info(
-        "ℹ️ Only **failing** scorers are re-evaluated each revision — a scorer that already "
-        "passed isn't re-scored, its grade carries forward. So bold cells are fresh failing "
-        "grades; faded cells are carried forward.",
-        icon="ℹ️",
-    )
-
     summary = queries.proposal_division_summary(picked)
     if summary.empty:
         st.info("No section-level scores for this proposal.")
@@ -255,4 +272,23 @@ def render(f) -> None:
     for _, m in modes_df.iterrows():
         modes_by_sec.setdefault(m["section_id"], {})[int(m["revision"])] = m["mode"]
 
-    _one_table(picked, summary, sv, modes_by_sec)
+    # ── Section selector (PRD 8.2) — all sections, or focus one ──────
+    sec_opts = {"__all__": "All sections"}
+    for _, srow in summary.iterrows():
+        sec_opts[srow["section_id"]] = division_label(srow["section_id"])
+    choice = st.selectbox(
+        "Section", options=list(sec_opts.keys()),
+        format_func=lambda k: sec_opts[k], key=f"dd_section_view_{picked}",
+        help="All sections = the full matrix. Pick one section to focus it "
+             "and reveal the revision type (full/surgical) in each column header.",
+    )
+    sub = summary if choice == "__all__" else summary[summary["section_id"] == choice]
+
+    st.info(
+        "ℹ️ Only **failing** scorers are re-evaluated each revision — a scorer that already "
+        "passed isn't re-scored, its grade carries forward. Bold cells are fresh failing grades; "
+        "faded cells are carried forward.",
+        icon="ℹ️",
+    )
+
+    _matrix(picked, sub, sv, modes_by_sec)

@@ -20,4 +20,4 @@ anthropic==0.42.0           # Claude API for the AI chart generator
 # which forces Streamlit Cloud to rebuild the environment and start a
 # fresh Python process — re-importing every module cleanly. Bump the
 # date below whenever a deploy needs a guaranteed full restart.
-# full-restart marker: 2026-06-30-r9
+# full-restart marker: 2026-06-30-r10
