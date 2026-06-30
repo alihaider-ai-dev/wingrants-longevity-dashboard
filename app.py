@@ -1,5 +1,5 @@
 """
-WinGrants longevity dashboard — Streamlit entry point.
+WinGrant Scorers — Streamlit entry point.
 
 Layout:
   - Sidebar : lookback window + bucket size + DB status
@@ -30,7 +30,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from src import auth, charts, filters, proposal_detail, queries
+from src import charts, filters, proposal_detail, queries
 from src.heatmap import render_heatmap
 from src.quality import grade_with_label, quality_label
 from src.scorer_names import label_for
@@ -44,15 +44,11 @@ _SECTIONED = {"ai_draft", "external_proposal"}
 
 # ── Page config (must run before any other Streamlit call) ───────
 st.set_page_config(
-    page_title="WinGrants longevity",
+    page_title="WinGrant Scorers",
     page_icon="📊",
     layout="wide",
     initial_sidebar_state="expanded",
 )
-
-
-# ── Auth gate (blocks the rest of the page) ──────────────────────
-auth.gate()
 
 
 # ── Title strip ───────────────────────────────────────────────────
@@ -61,7 +57,7 @@ st.markdown(
     <div style="padding:18px 0 8px;">
       <h1 style="font-family:Fraunces,Georgia,serif;font-size:32px;
                  color:#1A1530;margin:0;letter-spacing:-0.005em;">
-        WinGrants <em style="color:#D9542E;font-style:italic;">longevity</em>
+        WinGrant <em style="color:#D9542E;font-style:italic;">Scorers</em>
       </h1>
       <p style="margin:6px 0 0;color:#6D6682;font-size:13px;">
         How quality scores evolve across the WinGrants surfaces we
@@ -974,7 +970,7 @@ st.markdown(
     """
     <hr style="border:none;border-top:1px solid #E2D8CA;margin:28px 0 12px;">
     <p style="color:#B3ADC1;font-size:11px;text-align:center;">
-      WinGrants longevity dashboard · Streamlit + Postgres ·
+      WinGrant Scorers · Streamlit + Postgres ·
       data refreshed every 30 minutes (cache TTL)
     </p>
     """,

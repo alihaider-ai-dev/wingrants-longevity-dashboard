@@ -1,4 +1,4 @@
-# WinGrants longevity dashboard
+# WinGrant Scorers
 
 Internal Streamlit dashboard that surfaces every score the WinGrants
 platform records — research notes, strategy notes, AI-drafted
