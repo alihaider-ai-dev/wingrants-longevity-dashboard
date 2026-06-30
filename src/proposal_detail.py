@@ -63,9 +63,21 @@ def _hex_to_rgba(hex_color: str, alpha: float) -> str:
 
 
 def _failing_map(change_history: list) -> dict:
-    out = {}
+    """{revision_int: {scorer_id: failing_obj}}.
+
+    `change_history` keys revisions by their integer count (0 = the
+    initial evaluation, before any redraft). When the engine collapses
+    the earliest passes it stores them under the non-int key 'earlier' —
+    we fold that onto revision 0 (the initial column) so the initial
+    evaluation is always represented.
+    """
+    out: dict = {}
     for ch in change_history:
-        out[ch.get("revision")] = {f.get("id"): f for f in (ch.get("failing_at_entry") or [])}
+        rev = ch.get("revision")
+        key = rev if isinstance(rev, int) else 0
+        bucket = out.setdefault(key, {})
+        for fobj in (ch.get("failing_at_entry") or []):
+            bucket.setdefault(fobj.get("id"), fobj)
     return out
 
 
@@ -83,10 +95,11 @@ def _one_table(proposal_id: str, summary: pd.DataFrame, sv: dict, modes_by_sec: 
         global_max = max(global_max, sec_max)
         sections.append((sid, detail, _failing_map(ch), sec_max))
 
-    rev_cols = list(range(1, global_max + 1))
+    # Revision 0 = the initial evaluation, before any redrafting.
+    rev_cols = list(range(0, global_max + 1))
 
     heads = ["<th class='sec'>Section</th>", "<th class='scr'>Scorer</th>"]
-    heads += [f"<th>Rev {r}</th>" for r in rev_cols]
+    heads += [f"<th>{'Initial' if r == 0 else f'Rev {r}'}</th>" for r in rev_cols]
     heads.append("<th class='fin'>Final</th>")
 
     body = []
@@ -113,7 +126,8 @@ def _one_table(proposal_id: str, summary: pd.DataFrame, sv: dict, modes_by_sec: 
                 elif scid in fmap.get(r, {}):
                     g = int(fmap[r][scid].get("grade"))
                     bg, fg = quality_color(g)
-                    tip = _attr(f"Rev {r} ({modes.get(r, '—')}) — re-evaluated, failing · grade {g}")
+                    rlabel = "Initial evaluation" if r == 0 else f"Rev {r} ({modes.get(r, '—')}) — re-evaluated"
+                    tip = _attr(f"{rlabel}, failing · grade {g}")
                     tds.append(f"<td class='sc' style='background:{bg};color:{fg};font-weight:700' "
                                f"title=\"{tip}\">{g}</td>")
                 else:
@@ -166,10 +180,12 @@ def _one_table(proposal_id: str, summary: pd.DataFrame, sv: dict, modes_by_sec: 
     """
     st.markdown(html, unsafe_allow_html=True)
     st.caption(
-        "Each scorer = two rows: **score** on top, **justification** beneath. "
-        "Bold cell = re-evaluated & failing that revision · faded `n·` = carried forward "
-        "(passed, not re-evaluated) · grey = section had fewer revisions. "
-        "Colours: 1 BAD · 2 POOR · 3 FAIR · 4 GOOD · 5 EXCELLENT. Hover any cell for full text."
+        "**Initial** = the first evaluation, before any redrafting; then one column per "
+        "redraft revision, then **Final** (accepted). Each scorer = two rows: **score** on "
+        "top, **justification** beneath. Bold cell = re-evaluated & failing that revision · "
+        "faded `n·` = carried forward (passed, not re-evaluated) · grey = section had fewer "
+        "revisions. Colours: 1 BAD · 2 POOR · 3 FAIR · 4 GOOD · 5 EXCELLENT. Hover any cell "
+        "for full text."
     )
 
 
