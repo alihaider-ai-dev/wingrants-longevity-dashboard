@@ -949,6 +949,32 @@ def proposal_division_scores(proposal_id: str, section_id: str) -> pd.DataFrame:
     return run_query(sql, {"pid": proposal_id, "sid": section_id})
 
 
+def proposal_revision_modes(proposal_id: str) -> pd.DataFrame:
+    """Per (section_id, revision) redraft mode for one proposal.
+
+    The redraft *type* (full / targeted / targeted_compress / page_only)
+    is recorded only in the `section.redraft` event name — e.g.
+    "… redrafted (rev 3, targeted_compress)" — so we parse it out of
+    there, falling back to the event metadata's `mode` key.
+    """
+    sql = r"""
+        SELECT
+            metadata->>'section_id' AS section_id,
+            (metadata->>'revision')::int AS revision,
+            COALESCE(
+                substring(event_name from '\(rev [0-9]+, ([a-z_]+)\)'),
+                metadata->>'mode'
+            ) AS mode
+        FROM proposal_events
+        WHERE proposal_id = :pid
+          AND event_type = 'section.redraft'
+          AND metadata->>'section_id' IS NOT NULL
+          AND metadata->>'revision' IS NOT NULL
+        ORDER BY section_id, revision
+    """
+    return run_query(sql, {"pid": proposal_id})
+
+
 def proposal_section_versions(proposal_id: str) -> dict:
     """Return the parsed `section_versions` jsonb for one proposal — a
     {section_id: {best_score, score_history, change_history,
