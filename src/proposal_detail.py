@@ -22,6 +22,8 @@ column carries the full reasoning.
 """
 from __future__ import annotations
 
+import re
+
 import pandas as pd
 import streamlit as st
 
@@ -233,6 +235,67 @@ def _matrix(proposal_id: str, summary: pd.DataFrame, sv: dict, modes_by_sec: dic
     )
 
 
+# ── CSV export (PRD: scalable review, take-offline) ─────────────────
+
+
+def _export_frames(proposal_id: str, summary: pd.DataFrame, sv: dict,
+                   modes_by_sec: dict) -> tuple:
+    """Build two tidy frames from the same cell logic as the matrix:
+    a wide scores matrix and a long detail table (with justifications)."""
+    sections, global_max = [], 0
+    for _, srow in summary.iterrows():
+        sid = srow["section_id"]
+        detail = queries.proposal_division_scores(proposal_id, sid).sort_values(["grade", "scorer_id"])
+        ch = (sv.get(sid) or {}).get("change_history") or []
+        sec_max = int(srow["max_redraft"] or 0)
+        global_max = max(global_max, sec_max)
+        sections.append((sid, detail, _failing_map(ch), sec_max))
+
+    single = len(sections) == 1
+    max_col = sections[0][3] if single else global_max
+    rev_cols = list(range(0, max_col + 1))
+    col_label = lambda r: "Initial" if r == 0 else f"Rev {r}"
+
+    long_rows, wide_rows = [], []
+    for sid, detail, fmap, sec_max in sections:
+        modes = modes_by_sec.get(sid, {})
+        sec_label = division_label(sid)
+        for _, sr in detail.iterrows():
+            scid = sr["scorer_id"]
+            final = int(sr["grade"])
+            scorer = label_for(scid)
+            wide = {"Section": sec_label, "Scorer": scorer}
+            for r in rev_cols:
+                if r > sec_max:
+                    wide[col_label(r)] = ""
+                    continue
+                failing = scid in fmap.get(r, {})
+                g = int(fmap[r][scid].get("grade")) if failing else final
+                score = "N/A" if g == 0 else g
+                status = ("Not assessed" if g == 0
+                          else "re-evaluated · failing" if failing else "carried forward")
+                rtype = "initial draft" if r == 0 else (modes.get(r, "") or "")
+                just = _clean(fmap[r][scid].get("key_weakness")) if failing else ""
+                wide[col_label(r)] = score
+                long_rows.append({
+                    "Section": sec_label, "Scorer ID": scid, "Scorer": scorer,
+                    "Revision": col_label(r), "Revision type": rtype,
+                    "Score": score, "Status": status, "Justification": just,
+                })
+            fscore = "N/A" if final == 0 else final
+            wide["Final"] = fscore
+            long_rows.append({
+                "Section": sec_label, "Scorer ID": scid, "Scorer": scorer,
+                "Revision": "Final", "Revision type": "accepted",
+                "Score": fscore, "Status": "Not assessed" if final == 0 else "accepted (final)",
+                "Justification": _clean(sr["reasoning"]),
+            })
+            wide_rows.append(wide)
+
+    wide_cols = ["Section", "Scorer"] + [col_label(r) for r in rev_cols] + ["Final"]
+    return pd.DataFrame(long_rows), pd.DataFrame(wide_rows, columns=wide_cols)
+
+
 # ── Tab entry point ─────────────────────────────────────────────────
 
 
@@ -289,6 +352,28 @@ def render(f) -> None:
         "passed isn't re-scored, its grade carries forward. Bold cells are fresh failing grades; "
         "faded cells are carried forward.",
         icon="ℹ️",
+    )
+
+    # ── Export (respects the section selector above) ─────────────────
+    long_df, wide_df = _export_frames(picked, sub, sv, modes_by_sec)
+    scope = "all sections" if choice == "__all__" else sec_opts[choice]
+    fname = re.sub(r"[^A-Za-z0-9]+", "_", str(meta["title"])[:40]).strip("_") or str(picked)
+    dl = st.columns(2)
+    dl[0].download_button(
+        "⬇ Scores matrix (CSV)",
+        data=wide_df.to_csv(index=False).encode("utf-8"),
+        file_name=f"{fname}_scores.csv",
+        mime="text/csv",
+        use_container_width=True,
+        help=f"Wide score grid (Section · Scorer · Initial · Rev 1…N · Final) for {scope}.",
+    )
+    dl[1].download_button(
+        "⬇ Full detail + justifications (CSV)",
+        data=long_df.to_csv(index=False).encode("utf-8"),
+        file_name=f"{fname}_detail.csv",
+        mime="text/csv",
+        use_container_width=True,
+        help=f"One row per scorer × revision, with status + justification text, for {scope}.",
     )
 
     _matrix(picked, sub, sv, modes_by_sec)
