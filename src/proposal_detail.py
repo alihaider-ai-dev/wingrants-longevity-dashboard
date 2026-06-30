@@ -30,7 +30,7 @@ import streamlit as st
 from src import queries
 from src.charts import RULE
 from src.proposal_sections import division_label, division_sort_key
-from src.quality import quality_color
+from src.quality import quality_color, quality_label
 from src.scorer_names import label_for
 
 # Redraft-type labels parsed from section.redraft events.
@@ -163,15 +163,18 @@ def _matrix(proposal_id: str, summary: pd.DataFrame, sv: dict, modes_by_sec: dic
                     continue
                 arrow = _delta(g, prev)
                 prev = g
+                lab = quality_label(g)
                 if failing:
                     bg, fg = quality_color(g)
                     rl = "Initial evaluation" if r == 0 else f"Rev {r} ({modes.get(r, '—')}) — re-evaluated"
                     tds.append(f"<td class='sc' style='background:{bg};color:{fg};font-weight:700' "
-                               f"title=\"{_attr(rl + f', failing · grade {g}')}\">{g}{arrow}</td>")
+                               f"title=\"{_attr(rl + f', failing · grade {g}')}\">{g}{arrow}"
+                               f"<span class='lbl'>{lab}</span></td>")
                 else:
                     bg = _hex_to_rgba(quality_color(g)[0], 0.30)
                     tds.append(f"<td class='sc' style='background:{bg};color:#8A8398' "
-                               f"title='carried forward — passed earlier, not re-evaluated'>{g}·{arrow}</td>")
+                               f"title='carried forward — passed earlier, not re-evaluated'>{g}·{arrow}"
+                               f"<span class='lbl'>{lab}</span></td>")
             if final == 0:
                 tds.append(f"<td class='sc fin' style='background:{_NA_BG};color:{_NA_FG}' "
                            f"title=\"{_NA_TIP}\">N/A</td>")
@@ -179,7 +182,7 @@ def _matrix(proposal_id: str, summary: pd.DataFrame, sv: dict, modes_by_sec: dic
                 arrow = _delta(final, prev)
                 fbg, ffg = quality_color(final)
                 tds.append(f"<td class='sc fin' style='background:{fbg};color:{ffg};font-weight:700'>"
-                           f"{final}{arrow}</td>")
+                           f"{final}{arrow}<span class='lbl'>{quality_label(final)}</span></td>")
             body.append(f"<tr>{''.join(tds)}</tr>")
 
             # ── Justification row ──
@@ -211,7 +214,9 @@ def _matrix(proposal_id: str, summary: pd.DataFrame, sv: dict, modes_by_sec: dic
       table.one td.scr {{ position:sticky; left:30px; z-index:2; background:#FBF7F1; text-align:left;
                           width:185px; max-width:185px; font-size:10px; color:#1A1530; }}
       table.one th.scr {{ left:30px; z-index:5; }}
-      table.one td.sc {{ text-align:center; vertical-align:middle; font-size:13px; min-width:46px; }}
+      table.one td.sc {{ text-align:center; vertical-align:middle; font-size:13px; min-width:58px; }}
+      table.one td.sc .lbl {{ display:block; font-size:7.5px; font-weight:600; letter-spacing:0.03em;
+                              line-height:1.1; margin-top:1px; opacity:0.85; }}
       table.one td.jt {{ white-space:normal; font-size:9.5px; line-height:1.25; color:#3F3957;
                          background:#FCFAF6; min-width:150px; max-width:200px; }}
       table.one td.na {{ background:#F4EEE7; }}
@@ -280,14 +285,16 @@ def _export_frames(proposal_id: str, summary: pd.DataFrame, sv: dict,
                 long_rows.append({
                     "Section": sec_label, "Scorer ID": scid, "Scorer": scorer,
                     "Revision": col_label(r), "Revision type": rtype,
-                    "Score": score, "Status": status, "Justification": just,
+                    "Score": score, "Quality": "Not assessed" if g == 0 else quality_label(g),
+                    "Status": status, "Justification": just,
                 })
             fscore = "N/A" if final == 0 else final
             wide["Final"] = fscore
             long_rows.append({
                 "Section": sec_label, "Scorer ID": scid, "Scorer": scorer,
                 "Revision": "Final", "Revision type": "accepted",
-                "Score": fscore, "Status": "Not assessed" if final == 0 else "accepted (final)",
+                "Score": fscore, "Quality": "Not assessed" if final == 0 else quality_label(final),
+                "Status": "Not assessed" if final == 0 else "accepted (final)",
                 "Justification": _clean(sr["reasoning"]),
             })
             wide_rows.append(wide)
