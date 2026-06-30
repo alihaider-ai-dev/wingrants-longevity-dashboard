@@ -637,8 +637,8 @@ with tabs[4]:
 
 
 # ── Tab 5 — Proposal deep-dive ────────────────────────────────────
-# Pick one AI-draft proposal → walk every EC division, its redraft
-# trajectory, and every scorer's final grade + justification. Lives in
+# Pick one AI-draft proposal → pick a section → see its score across
+# revisions and every scorer's final grade + justification. Lives in
 # its own module so this entry file stays thin.
 with tabs[5]:
     proposal_detail.render(f)
